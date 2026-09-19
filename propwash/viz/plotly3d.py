@@ -213,7 +213,6 @@ def slipstream_traces(result: BEMTResult, radius: float, n_ring: int = 24,
     """
     import plotly.graph_objects as go
 
-    t = theme(dark)
     stride = max(result.x.size // 10, 1)
     r_s = result.r[::stride]
     va = result.v_axial_induced[::stride]

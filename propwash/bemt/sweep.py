@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Sequence
+from typing import Any, Callable
 
 import numpy as np
 
@@ -19,7 +19,7 @@ from ..atmosphere import SEA_LEVEL, AirState
 from ..geometry import BladeGeometry
 from ..motor import MatchPoint, MotorSpec, match_rpm
 from ..units import rpm_to_rad_s
-from .core import OperatingPoint, SolverOptions
+from .core import SolverOptions
 from .solver import PropellerSolver
 
 
@@ -39,19 +39,29 @@ class SweepResult:
     def __getitem__(self, key: str) -> np.ndarray:
         return self.data[key]
 
+    def _scalar_fields(self) -> dict[str, np.ndarray]:
+        """Arrays with exactly one value per operating point.
+
+        Backends also return bookkeeping entries -- the backend's name, the
+        elapsed time -- and the spanwise arrays carry an extra station axis, so
+        anything that is not a same-shaped array is filtered out here rather
+        than at every call site.
+        """
+        shape = self.shape
+        return {k: v for k, v in self.data.items()
+                if isinstance(v, np.ndarray) and v.shape == shape}
+
     def field_names(self) -> list[str]:
-        return sorted(k for k, v in self.data.items() if v.shape == self.shape)
+        return sorted(self._scalar_fields())
 
     def best(self, key: str = "efficiency") -> dict[str, float]:
         """Locate the maximum of ``key`` and report every field there."""
-        arr = np.nan_to_num(self.data[key], nan=-np.inf)
-        flat = int(np.argmax(arr))
-        idx = np.unravel_index(flat, arr.shape)
+        arr = np.nan_to_num(np.asarray(self.data[key], dtype=float), nan=-np.inf)
+        idx = np.unravel_index(int(np.argmax(arr)), arr.shape)
         out = {name: float(np.asarray(self.axes[name]).ravel()[idx[i]])
                for i, name in enumerate(self.axis_order)}
-        for name, val in self.data.items():
-            if val.shape == arr.shape:
-                out[name] = float(val[idx])
+        for name, val in self._scalar_fields().items():
+            out[name] = float(val[idx])
         return out
 
     def to_frame(self):
@@ -59,9 +69,8 @@ class SweepResult:
         import pandas as pd
         grids = np.meshgrid(*[self.axes[k] for k in self.axis_order], indexing="ij")
         cols = {k: g.ravel() for k, g in zip(self.axis_order, grids)}
-        for name, val in self.data.items():
-            if val.shape == self.shape:
-                cols[name] = val.ravel()
+        for name, val in self._scalar_fields().items():
+            cols[name] = val.ravel()
         return pd.DataFrame(cols)
 
 
@@ -130,10 +139,12 @@ def pitch_rpm_map(geometry: BladeGeometry, pitch_deg: np.ndarray, rpm: np.ndarra
         rows.append(solver.solve_many(rpm_arr, np.full(rpm_arr.size, float(v_inf)), air))
 
     data: dict[str, np.ndarray] = {}
-    for key in rows[0]:
+    for key, sample in rows[0].items():
+        if not isinstance(sample, np.ndarray):
+            continue          # backend name, elapsed time, and other bookkeeping
         try:
-            data[key] = np.stack([r[key] for r in rows])
-        except (ValueError, TypeError):
+            data[key] = np.stack([np.asarray(r[key]) for r in rows])
+        except ValueError:
             continue
 
     return SweepResult(axes={"pitch_deg": pitch, "rpm": rpm_arr},
@@ -204,57 +215,86 @@ def match_operating_point(geometry: BladeGeometry, motor: MotorSpec,
 
 def thrust_required_speed(geometry: BladeGeometry, motor: MotorSpec,
                           drag_fn: Callable[[float], float] | None = None,
-                          drag_area: float = 0.010, mass: float = 1.2,
-                          throttle: float = 1.0, air: AirState | None = None,
-                          v_max: float = 80.0, n_iter: int = 40,
+                          wing_area: float = 0.22, span: float = 1.20,
+                          oswald: float = 0.85, cd0: float = 0.035,
+                          mass: float = 1.2, throttle: float = 1.0,
+                          air: AirState | None = None, v_min: float = 3.0,
+                          v_max: float = 80.0, n_scan: int = 20, n_iter: int = 32,
                           options: SolverOptions | None = None,
-                          backend: str = "auto") -> dict[str, float]:
+                          backend: str = "auto") -> dict[str, Any]:
     """Find the level-flight speed where propeller thrust equals airframe drag.
 
-    This closes the loop all the way from blade geometry to aircraft speed: pick
-    a pitch, and the trim speed moves.  ``drag_fn`` may be supplied for a real
-    drag polar; otherwise a simple ``D = q * C_D A`` flat-plate model is used,
-    with an induced-drag term from the wing loading.
+    This closes the loop from blade geometry all the way to aircraft speed:
+    change the pitch and the trim speed moves.
+
+    The drag model is the standard two-term polar,
+
+        D = q S C_D0  +  W^2 / (q pi e b^2)
+
+    which is U-shaped -- induced drag diverges as speed falls, parasite drag
+    grows as it rises.  Thrust available falls monotonically with speed, so the
+    two curves can cross *twice*: once on the back side of the power curve and
+    once at the genuine cruise trim.  Bisecting blindly from zero finds neither,
+    because at V = 0 required thrust is infinite.  So the excess-thrust curve is
+    scanned first and the bracket is taken at the *last* positive-to-negative
+    crossing, which is the stable high-speed trim point.
+
+    Pass ``drag_fn`` for a real drag polar; the built-in model is only meant to
+    be plausible.
     """
     air = air or SEA_LEVEL
+    weight = mass * 9.80665
+    rho = air.density
 
     def drag(v: float) -> float:
         if drag_fn is not None:
             return float(drag_fn(v))
-        q = 0.5 * air.density * v * v
-        parasite = q * drag_area
-        # Induced drag at level flight: lift equals weight.
-        weight = mass * 9.80665
-        induced = (weight ** 2) / max(q * math.pi * 0.85 * 1.2, 1e-6) * 1e-3
+        q = 0.5 * rho * v * v
+        if q < 1e-6:
+            return float("inf")
+        parasite = q * wing_area * cd0
+        induced = weight ** 2 / (q * math.pi * oswald * span ** 2)
         return parasite + induced
 
-    lo, hi = 0.0, float(v_max)
-    last: MatchPoint | None = None
+    cache: dict[float, MatchPoint] = {}
 
-    def excess(v: float) -> tuple[float, MatchPoint]:
-        mp = match_operating_point(geometry, motor, v_inf=v, throttle=throttle,
-                                   air=air, options=options, backend=backend)
-        return mp.thrust - drag(v), mp
+    def excess(v: float) -> float:
+        if v not in cache:
+            cache[v] = match_operating_point(geometry, motor, v_inf=v,
+                                             throttle=throttle, air=air,
+                                             options=options, backend=backend)
+        d = drag(v)
+        return (cache[v].thrust - d) if math.isfinite(d) else -math.inf
 
-    e_lo, mp_lo = excess(lo)
-    e_hi, mp_hi = excess(hi)
-    if e_lo <= 0.0:
-        return {"speed": 0.0, "converged": False, "thrust": mp_lo.thrust,
-                "drag": drag(0.0), "rpm": mp_lo.rpm}
-    if e_hi > 0.0:
-        return {"speed": float(v_max), "converged": False, "thrust": mp_hi.thrust,
-                "drag": drag(v_max), "rpm": mp_hi.rpm}
+    speeds = np.linspace(max(v_min, 0.5), v_max, max(n_scan, 4))
+    values = [excess(float(v)) for v in speeds]
 
+    crossing = None
+    for i in range(len(speeds) - 1):
+        if values[i] > 0.0 >= values[i + 1]:
+            crossing = (float(speeds[i]), float(speeds[i + 1]))
+    if crossing is None:
+        best = int(np.argmax(values))
+        return {
+            "speed": float(speeds[best]), "converged": False,
+            "reason": ("never enough thrust to fly level"
+                       if values[best] <= 0.0 else
+                       f"still climbing at v_max = {v_max:.0f} m/s"),
+            "rpm": cache[float(speeds[best])].rpm,
+            "thrust": cache[float(speeds[best])].thrust,
+            "drag": drag(float(speeds[best])),
+        }
+
+    lo, hi = crossing
     for _ in range(n_iter):
         mid = 0.5 * (lo + hi)
-        e_mid, last = excess(mid)
-        if e_mid > 0.0:
+        if excess(mid) > 0.0:
             lo = mid
         else:
             hi = mid
 
     v_trim = 0.5 * (lo + hi)
-    mp = last if last is not None else mp_lo
+    mp = cache[min(cache, key=lambda v: abs(v - v_trim))]
     return {
         "speed": v_trim, "converged": True, "rpm": mp.rpm, "thrust": mp.thrust,
         "drag": drag(v_trim), "current": mp.current,

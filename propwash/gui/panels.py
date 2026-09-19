@@ -7,7 +7,7 @@ between them, so they are worth doing once properly.
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Iterable
 
 from ..viz.palette import theme
 

@@ -17,8 +17,8 @@ from typing import Any, Literal, Sequence
 
 import numpy as np
 
-from .airfoil import (DEG, AirfoilPolar, AnalyticPolar, blended_polar,
-                      get_airfoil, stack_tables)
+from .airfoil import (DEG, AnalyticPolar, blended_polar, get_airfoil,
+                      stack_tables)
 from .units import INCH, inch_pitch_to_twist
 
 DistKind = Literal["constant", "linear", "elliptic", "inverse", "betz", "spline", "parabolic"]

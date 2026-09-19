@@ -13,7 +13,6 @@ Two things this does that a naive GLMeshItem does not:
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import numpy as np
@@ -51,7 +50,6 @@ def bake_lighting(colors: np.ndarray, normals: np.ndarray) -> np.ndarray:
 def field_vertex_colors(mesh: PropellerMesh, result: BEMTResult | None, field: str,
                         dark: bool = False) -> tuple[np.ndarray, str, float, float]:
     """RGBA per vertex for ``field``, plus the caption and range for a legend."""
-    t = theme(dark)
     hub_rgb = hex_to_rgb("#4a4a45" if dark else "#b8b7b1")
 
     if result is None or not hasattr(result, field):

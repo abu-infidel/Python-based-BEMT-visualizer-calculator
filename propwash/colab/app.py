@@ -28,17 +28,16 @@ from typing import Any, Callable
 
 import numpy as np
 
-from ..accel import get_backend, list_backends
+from ..accel import list_backends
 from ..atmosphere import isa
 from ..bemt.core import BEMTResult, OperatingPoint, SolverOptions
 from ..bemt.solver import PropellerSolver
-from ..bemt.sweep import (envelope_map, j_sweep, match_operating_point,
-                          pitch_rpm_map)
+from ..bemt.sweep import j_sweep, match_operating_point, pitch_rpm_map
 from ..geometry import BladeGeometry, get_preset, list_presets
 from ..mesh import build_propeller_mesh
 from ..motor import MotorSpec, get_motor, list_motors
 from ..units import INCH
-from ..viz.palette import FIELD_ORDER, FIELD_STYLES, field_label, theme
+from ..viz.palette import field_label, theme
 from .bootstrap import enable_plotly_in_colab, probe
 
 DEG = math.pi / 180.0
@@ -512,7 +511,6 @@ class PropwashLab:
         self._render_tab(self.tabs.selected_index)
 
     def _render_tab(self, index: int | None) -> None:
-        import matplotlib
         if index is None:
             return
         names = ["3d", "span", "sweep", "map", "match", "bench", "export"]

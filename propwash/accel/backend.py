@@ -15,15 +15,15 @@ from __future__ import annotations
 import math
 import os
 import time
-from dataclasses import dataclass, field
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
 from ..atmosphere import SEA_LEVEL, AirState
 from ..geometry import BladeStations
-from ..bemt.core import (PHI_HI, PHI_LO, SolverOptions, integrate_batch,
-                         solve_batch as _numpy_solve_batch, _batch_context)
+from ..bemt.core import (PHI_HI, PHI_LO, SolverOptions,
+                         solve_batch as _numpy_solve_batch)
 from ..units import rpm_to_rad_s
 
 _SPAN_KEYS = ("phi", "alpha", "cl", "cd", "w", "dt_dr", "dq_dr", "loss_factor")

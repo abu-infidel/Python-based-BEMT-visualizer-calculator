@@ -176,7 +176,6 @@ def _fan_faces(centre: int, ring: np.ndarray, flip: bool = False) -> np.ndarray:
 def build_blade_surface(stations: BladeStations, n_chord: int = 61,
                         azimuth: float = 0.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """One blade as ``(vertices, faces, station_x)``, including a tip cap."""
-    geom = stations.geometry
     n_span = stations.n
 
     # Per-station section shapes, reusing the polar's thickness and camber.

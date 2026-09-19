@@ -10,14 +10,11 @@ else.
 from __future__ import annotations
 
 import math
-from typing import Any, Sequence
-
 import numpy as np
 
 from ..bemt.core import BEMTResult
 from ..geometry import BladeStations
-from .palette import (SEQ_BLUE, diverging_ramp, field_label, mpl_colormap,
-                      ramp_array, series_color, theme)
+from .palette import SEQ_BLUE, mpl_colormap, series_color, theme
 
 DEG = 180.0 / math.pi
 LINEWIDTH = 1.8

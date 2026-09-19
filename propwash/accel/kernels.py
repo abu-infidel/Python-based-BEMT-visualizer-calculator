@@ -24,8 +24,6 @@ from __future__ import annotations
 import types
 from typing import Any, Callable
 
-import numpy as np
-
 from . import _device_math as _dm
 
 # Imported at module scope, not inside the factory, for two reasons: the CUDA
