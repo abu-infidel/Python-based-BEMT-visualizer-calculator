@@ -1,6 +1,6 @@
 # Propwash
 
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/abu-infidel/collab-test-/blob/main/notebooks/Propwash_Propeller_Lab.ipynb)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/abu-infidel/Python-based-BEMT-visualizer-calculator/blob/main/notebooks/Propwash_Propeller_Lab.ipynb)
 
 **A GPU-accelerated blade-element-momentum propeller laboratory with a 3-D visualiser.**
 
@@ -48,31 +48,33 @@ motor on 3S:
 
 ### On Colab (the intended home)
 
-> **This repository is private.** A plain `git clone` from a Colab cell will
-> fail with `could not read Username for 'https://github.com'` — Colab has no
-> terminal to answer the credential prompt. **[docs/COLAB.md](docs/COLAB.md)**
-> has three ways round it (upload a ZIP, a read-only token in Colab Secrets, or
-> make the repo public) plus troubleshooting for the GUI and the GPU backends.
-> Start there.
-
-Once the code is on the runtime, and with *Runtime → Change runtime type →
-T4 GPU* selected:
+Pick *Runtime → Change runtime type → T4 GPU* **first** — changing it restarts
+the VM and wipes `/content`. Then:
 
 ```python
+!git clone --depth 1 https://github.com/abu-infidel/Python-based-BEMT-visualizer-calculator.git /content/propwash
+%cd /content/propwash
+
 import propwash.colab as pc
 pc.setup()          # installs only what is missing; prints what this host can do
 lab = pc.launch()   # the GUI
 ```
 
-Then open [`notebooks/Propwash_Propeller_Lab.ipynb`](notebooks/Propwash_Propeller_Lab.ipynb),
-which walks through the physics, the charts, the CUDA kernel and a benchmark of
-the host you happen to be on.
+Or open the notebook straight from GitHub with the badge above — it walks
+through the physics, the charts, the CUDA kernel and a benchmark of the host
+you happen to be on.
+
+**[docs/COLAB.md](docs/COLAB.md)** has the longer version: GPU runtime
+selection, pushing the benchmark until it runs out of memory, and what to do
+when the GUI renders as a blank cell.
 
 ![Plotly 3-D view](docs/images/plotly-3d.png)
 
 ### Locally
 
 ```bash
+git clone https://github.com/abu-infidel/Python-based-BEMT-visualizer-calculator.git
+cd Python-based-BEMT-visualizer-calculator
 pip install -e ".[all]"     # or: pip install -e ".[notebook]" for the notebook only
 
 python -m propwash gui                     # desktop GUI (Qt + OpenGL)

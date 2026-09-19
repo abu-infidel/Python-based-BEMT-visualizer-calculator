@@ -19,6 +19,11 @@ classifiers = [
 ]
 dependencies = ["numpy>=1.24"]
 
+[project.urls]
+Homepage = "https://github.com/abu-infidel/Python-based-BEMT-visualizer-calculator"
+Repository = "https://github.com/abu-infidel/Python-based-BEMT-visualizer-calculator"
+Documentation = "https://github.com/abu-infidel/Python-based-BEMT-visualizer-calculator/blob/main/docs/PHYSICS.md"
+
 [project.optional-dependencies]
 accel = ["numba>=0.58"]
 cuda = ["numba>=0.58", "cupy-cuda12x"]
