@@ -31,9 +31,9 @@ from ..geometry import BladeGeometry, get_preset, list_presets
 from ..mesh import build_propeller_mesh
 from ..motor import get_motor, list_motors
 from ..units import INCH
-from ..viz.palette import field_label, series_color, theme
+from ..viz.palette import field_label, field_ramp, series_color, theme
 from .gl_view import PropellerGLView
-from .panels import LabeledSlider, MetricCard, group, labelled
+from .panels import ColorLegend, LabeledSlider, MetricCard, group, labelled
 from .theme import configure_pyqtgraph, stylesheet
 
 DEG = math.pi / 180.0
@@ -77,6 +77,7 @@ class PropwashWindow:
         self.window.setStyleSheet(stylesheet(dark))
 
         self.view = PropellerGLView(dark)
+        self.legend = ColorLegend(dark)
         self._build_controls()
         self._build_plots()
         self._layout()
@@ -275,7 +276,14 @@ class PropwashWindow:
             row.addWidget(card.widget)
 
         tabs = W.QTabWidget()
-        tabs.addTab(self.view.widget, "3-D blade")
+
+        blade_tab = W.QWidget()
+        blade_col = W.QVBoxLayout(blade_tab)
+        blade_col.setContentsMargins(0, 0, 0, 0)
+        blade_col.setSpacing(0)
+        blade_col.addWidget(self.view.widget, 1)
+        blade_col.addWidget(self.legend.widget)
+        tabs.addTab(blade_tab, "3-D blade")
 
         span = W.QWidget()
         grid = W.QGridLayout(span)
@@ -424,8 +432,11 @@ class PropwashWindow:
         return self.c_field.currentData() or "dt_dr"
 
     def _refresh_view(self) -> None:
-        if self.mesh is not None:
-            self.view.set_field(self.result, self._field())
+        if self.mesh is None:
+            return
+        field = self._field()
+        label, vmin, vmax = self.view.set_field(self.result, field)
+        self.legend.set_field(field_ramp(field, self.dark), label, vmin, vmax)
 
     def _refresh_cards(self) -> None:
         r = self.result

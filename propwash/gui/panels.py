@@ -173,3 +173,83 @@ def labelled(text: str, widget, dark: bool = True):
 
 
 __all__ = ["LabeledSlider", "MetricCard", "group", "labelled"]
+
+
+class ColorLegend:
+    """A horizontal colour bar for the 3-D view.
+
+    The OpenGL viewport colours the blade by a solver field, and colour without
+    a scale is decoration rather than data -- so the ramp, the field name and
+    the numeric range are drawn underneath it.  The ramp is painted from the
+    same token arrays the mesh is coloured with, so the bar cannot disagree
+    with the blade.
+    """
+
+    def __init__(self, dark: bool = True, height: int = 38) -> None:
+        QtCore, QtGui, QtWidgets = _qt()
+        self._QtCore, self._QtGui = QtCore, QtGui
+        self.dark = dark
+        self._ramp = None
+        self._label = ""
+        self._vmin = 0.0
+        self._vmax = 1.0
+
+        legend = self
+
+        class _Canvas(QtWidgets.QWidget):
+            def paintEvent(self, _event):
+                legend._paint(self)
+
+        self.widget = _Canvas()
+        self.widget.setFixedHeight(height)
+        self.widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                                  QtWidgets.QSizePolicy.Fixed)
+
+    def set_field(self, ramp, label: str, vmin: float, vmax: float) -> None:
+        self._ramp = ramp
+        self._label = label
+        self._vmin = float(vmin)
+        self._vmax = float(vmax)
+        self.widget.update()
+
+    def set_dark(self, dark: bool) -> None:
+        self.dark = dark
+        self.widget.update()
+
+    def _paint(self, canvas) -> None:
+        import numpy as np
+        QtCore, QtGui = self._QtCore, self._QtGui
+        t = theme(self.dark)
+
+        painter = QtGui.QPainter(canvas)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        w, h = canvas.width(), canvas.height()
+        pad = 12
+        bar_h = 10
+        bar = QtCore.QRectF(pad, 4, max(w - 2 * pad, 1), bar_h)
+
+        if self._ramp is not None and len(self._ramp):
+            gradient = QtGui.QLinearGradient(bar.left(), 0.0, bar.right(), 0.0)
+            ramp = np.asarray(self._ramp, dtype=float)
+            for i, rgb in enumerate(ramp):
+                gradient.setColorAt(i / max(len(ramp) - 1, 1),
+                                    QtGui.QColor.fromRgbF(*rgb[:3], 1.0))
+            painter.fillRect(bar, QtGui.QBrush(gradient))
+
+        painter.setPen(QtGui.QColor(t["text_secondary"]))
+        font = painter.font()
+        font.setPointSizeF(8.0)
+        painter.setFont(font)
+
+        text_rect = QtCore.QRectF(pad, bar.bottom() + 2, bar.width(), h - bar_h - 6)
+        painter.drawText(text_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                         f"{self._vmin:,.3g}")
+        painter.drawText(text_rect, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter,
+                         f"{self._vmax:,.3g}")
+        painter.setPen(QtGui.QColor(t["text"]))
+        painter.drawText(text_rect, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignVCenter,
+                         self._label or "")
+        painter.end()
+
+
+__all__.append("ColorLegend")

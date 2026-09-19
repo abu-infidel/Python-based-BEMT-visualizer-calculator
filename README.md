@@ -201,7 +201,7 @@ Against published static data for an APC 10×5 the model lands within roughly
 
 ```
 $ python -m pytest -q
-156 passed
+165 passed
 ```
 
 The full derivation, every correction, and an explicit list of what the model
