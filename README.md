@@ -190,6 +190,8 @@ tested together.
 - The CUDA kernel is executed under `NUMBA_ENABLE_CUDASIM` in CI, exercising the
   shared-memory reduction and the block-per-case mapping without a GPU.
 - The raw CUDA C is compiled to PTX by NVRTC for compute_75 through compute_90.
+- The PyTorch path is forced onto the CPU in the suite so it is covered even
+  where `TorchBackend` correctly reports itself unavailable.
 - The ISA implementation reproduces the published standard-atmosphere table
   exactly (11 km → 22632 Pa, 0.36392 kg/m³).
 - Physical invariants are asserted, not assumed: figure of merit stays below 1,
@@ -201,7 +203,7 @@ Against published static data for an APC 10×5 the model lands within roughly
 
 ```
 $ python -m pytest -q
-165 passed
+166 passed
 ```
 
 The full derivation, every correction, and an explicit list of what the model

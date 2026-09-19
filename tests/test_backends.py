@@ -236,3 +236,24 @@ def test_raw_cuda_source_mirrors_the_python_kernel():
     for token in ("pw_prandtl", "pw_interp", "pw_corrections", "pw_element",
                   "__syncthreads", "bemt_solve", "FLAG_TIP_LOSS"):
         assert token in CUDA_SOURCE, f"{token} missing from the CUDA kernel"
+
+
+def test_torch_path_matches_the_reference_on_cpu(stations, tables, options, sea_level):
+    """The Torch path is normally GPU-only, so force it onto the CPU to test it.
+
+    ``TorchBackend`` reports itself unavailable without a GPU device, which
+    would otherwise leave this code entirely uncovered on a CPU box.
+    """
+    pytest.importorskip("torch")
+    from propwash.accel.torch_path import solve_batch_torch
+
+    rpm = np.linspace(2000.0, 12000.0, 24)
+    v = np.linspace(0.0, 25.0, 24)
+    out = solve_batch_torch(stations, rpm, v, sea_level, options, tables, True,
+                            device="cpu")
+    ref = solve_batch(stations, rpm, v, sea_level, options, tables)
+
+    for key in ("thrust", "torque"):
+        scale = max(float(np.abs(np.asarray(ref[key])).max()), 1e-12)
+        assert np.abs(out[key] - np.asarray(ref[key])).max() / scale < 1e-12, key
+    assert np.abs(out["phi"] - np.asarray(ref["phi"])).max() < 1e-12
