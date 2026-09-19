@@ -48,18 +48,23 @@ motor on 3S:
 
 ### On Colab (the intended home)
 
-Pick *Runtime → Change runtime type → T4 GPU*, then:
+> **This repository is private.** A plain `git clone` from a Colab cell will
+> fail with `could not read Username for 'https://github.com'` — Colab has no
+> terminal to answer the credential prompt. **[docs/COLAB.md](docs/COLAB.md)**
+> has three ways round it (upload a ZIP, a read-only token in Colab Secrets, or
+> make the repo public) plus troubleshooting for the GUI and the GPU backends.
+> Start there.
+
+Once the code is on the runtime, and with *Runtime → Change runtime type →
+T4 GPU* selected:
 
 ```python
-!git clone https://github.com/abu-infidel/collab-test- propwash-repo
-%cd propwash-repo
-
 import propwash.colab as pc
 pc.setup()          # installs only what is missing; prints what this host can do
 lab = pc.launch()   # the GUI
 ```
 
-Or open [`notebooks/Propwash_Propeller_Lab.ipynb`](notebooks/Propwash_Propeller_Lab.ipynb),
+Then open [`notebooks/Propwash_Propeller_Lab.ipynb`](notebooks/Propwash_Propeller_Lab.ipynb),
 which walks through the physics, the charts, the CUDA kernel and a benchmark of
 the host you happen to be on.
 
@@ -279,6 +284,12 @@ cleanly:
 | `notebook` | plotly, ipywidgets, pandas, matplotlib | the Colab GUI |
 | `desktop` | PySide6, pyqtgraph, PyOpenGL | the Qt GUI |
 | `dev` | pytest, nvidia-cuda-nvrtc-cu12 | tests and the GPU-free CUDA check |
+
+## Contributors
+
+See [CONTRIBUTORS.md](CONTRIBUTORS.md). The implementation was written by Claude
+(Opus 5) via Claude Code, under the project owner's direction; that file also
+records what was verified by execution and what was not.
 
 ## Licence
 

@@ -26,6 +26,10 @@ NOTEBOOK_REQUIREMENTS = {
     "ipywidgets": "ipywidgets",
     "pandas": "pandas",
     "matplotlib": "matplotlib",
+    # Plotly 6+ moved FigureWidget onto anywidget.  Without it the 3-D view
+    # still works, but it falls back to redrawing a static figure instead of
+    # updating vertices in place.
+    "anywidget": "anywidget",
 }
 
 #: Only attempted when a CUDA device is present.
@@ -178,11 +182,26 @@ def setup(cuda: bool = True, desktop: bool = False, verbose: bool = True) -> Env
 
 
 def enable_plotly_in_colab() -> None:
-    """Make Plotly render in classic Colab output cells.
+    """Make ipywidgets and Plotly render inside Colab output cells.
 
-    Modern Colab handles Plotly natively; older runtimes need the renderer
-    nudged.  Harmless either way, so it is called from the app launcher.
+    Two separate things are needed and both fail silently when missing, which
+    is why the GUI otherwise appears as a blank cell:
+
+    * Colab sandboxes each output cell, so any widget beyond the built-in
+      ipywidgets set -- which includes Plotly's ``FigureWidget`` -- needs the
+      *custom widget manager* switched on for the session.
+    * Older Colab runtimes also need Plotly's renderer pointed at ``colab``.
+
+    Both are harmless outside Colab, so this is called unconditionally from the
+    app launcher.
     """
+    try:
+        if in_colab():
+            from google.colab import output as _colab_output
+            _colab_output.enable_custom_widget_manager()
+    except Exception:
+        pass
+
     try:
         import plotly.io as pio
         if in_colab() and "colab" in getattr(pio.renderers, "_renderers", {}):
