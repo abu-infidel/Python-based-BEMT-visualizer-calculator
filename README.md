@@ -1,6 +1,6 @@
 # Propwash
 
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/abu-infidel/collab-test-/blob/claude/adoring-dirac-jbotqt/notebooks/Propwash_Propeller_Lab.ipynb)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/abu-infidel/collab-test-/blob/main/notebooks/Propwash_Propeller_Lab.ipynb)
 
 **A GPU-accelerated blade-element-momentum propeller laboratory with a 3-D visualiser.**
 
