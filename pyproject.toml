@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "propwash"
+version = "0.1.0"
+description = "GPU-accelerated blade-element-momentum propeller laboratory with a 3-D visualiser"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["propeller", "BEMT", "aerodynamics", "CUDA", "visualisation", "colab"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+accel = ["numba>=0.58"]
+cuda = ["numba>=0.58", "cupy-cuda12x"]
+torch = ["torch"]
+plot = ["matplotlib>=3.7", "pandas>=2.0", "plotly>=5.18"]
+notebook = ["ipywidgets>=8.0", "plotly>=5.18", "pandas>=2.0", "matplotlib>=3.7"]
+desktop = ["PySide6>=6.5", "pyqtgraph>=0.13", "PyOpenGL", "matplotlib>=3.7"]
+cli = ["rich>=13.0"]
+mesh = ["trimesh"]
+dev = ["pytest>=7.4", "nvidia-cuda-nvrtc-cu12"]
+all = [
+    "numba>=0.58", "matplotlib>=3.7", "pandas>=2.0", "plotly>=5.18",
+    "ipywidgets>=8.0", "rich>=13.0", "PySide6>=6.5", "pyqtgraph>=0.13",
+    "PyOpenGL", "trimesh", "pytest>=7.4",
+]
+
+[project.scripts]
+propwash = "propwash.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["propwash*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::RuntimeWarning"]
