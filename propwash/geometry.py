@@ -236,7 +236,11 @@ class BladeGeometry:
         if self.root_airfoil == self.tip_airfoil:
             return [replace(root, thickness=float(t)) for t in self.thickness_at(xs)]
         x0 = self.airfoil_blend_start
-        f = np.clip((xs - x0) / max(1.0 - x0, 1e-6), 0.0, 1.0)
+        # Smoothstep, not a linear ramp: a linear blend is continuous but its
+        # derivative jumps at x0, and that kink shows up as a visible corner in
+        # the spanwise Cl and thrust-loading curves.
+        u = np.clip((xs - x0) / max(1.0 - x0, 1e-6), 0.0, 1.0)
+        f = u * u * (3.0 - 2.0 * u)
         out = []
         for fi, ti in zip(f, self.thickness_at(xs)):
             out.append(replace(blended_polar(root, tip, float(fi)), thickness=float(ti)))

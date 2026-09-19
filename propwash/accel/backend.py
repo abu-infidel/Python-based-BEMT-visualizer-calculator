@@ -128,9 +128,11 @@ def _derive(raw: dict[str, np.ndarray], stations: BladeStations, rpm: np.ndarray
     rho = air.density
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        eta = np.where(power > 1e-9, thrust * v_inf / np.maximum(power, 1e-12), 0.0)
-        fom = np.where((power > 1e-9) & (thrust > 0.0),
-                       np.maximum(thrust, 0.0) ** 1.5
+        # See integrate_batch: efficiency is undefined once thrust or power
+        # changes sign, so it is reported as zero rather than as a spike.
+        useful = (power > 1e-9) & (thrust > 0.0)
+        eta = np.where(useful, thrust * v_inf / np.maximum(power, 1e-12), 0.0)
+        fom = np.where(useful, np.maximum(thrust, 0.0) ** 1.5
                        / math.sqrt(2.0 * rho * area) / np.maximum(power, 1e-12), 0.0)
 
     out: dict[str, np.ndarray] = {

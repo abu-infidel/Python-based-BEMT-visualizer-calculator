@@ -412,7 +412,11 @@ def _assemble(phi: np.ndarray, converged: np.ndarray, ctx: _ElementContext,
     denom_cp = rho * n ** 3 * d ** 5
 
     j = ctx.v_inf / (n * d) if n > 1e-9 else 0.0
-    eta = (thrust * ctx.v_inf / power) if power > 1e-9 else 0.0
+    # Propulsive efficiency only means anything while the propeller is both
+    # producing thrust and absorbing power.  Past the zero-thrust advance ratio
+    # T V / P goes negative and then, as power crosses zero too, diverges --
+    # reporting that as "efficiency" is worse than reporting nothing.
+    eta = (thrust * ctx.v_inf / power) if (power > 1e-9 and thrust > 0.0) else 0.0
 
     # Hover figure of merit: ideal induced power over actual shaft power.
     area = math.pi * geom.radius ** 2
@@ -575,9 +579,9 @@ def integrate_batch(phi: np.ndarray, converged: np.ndarray, ctx: _ElementContext
     rho = ctx.rho
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        eta = np.where(power > 1e-9, thrust * v_inf / np.maximum(power, 1e-12), 0.0)
-        fom = np.where((power > 1e-9) & (thrust > 0.0),
-                       np.maximum(thrust, 0.0) ** 1.5
+        useful = (power > 1e-9) & (thrust > 0.0)
+        eta = np.where(useful, thrust * v_inf / np.maximum(power, 1e-12), 0.0)
+        fom = np.where(useful, np.maximum(thrust, 0.0) ** 1.5
                        / math.sqrt(2.0 * rho * area) / np.maximum(power, 1e-12), 0.0)
 
     return {
