@@ -59,7 +59,7 @@ def _interp(torch, alpha, alpha0, d_alpha, cl_tab, cd_tab):
 
 
 def _corrections(torch, cl, cd, w, chord, rho, mu, a_sound, thickness, re_ref,
-                 m_crit0, flags):
+                 m_crit0, cl_max, flags):
     if flags & FLAG_REYNOLDS:
         re = torch.clamp(rho * w * chord / mu, min=1e3)
         ratio = re_ref / re
@@ -70,6 +70,10 @@ def _corrections(torch, cl, cd, w, chord, rho, mu, a_sound, thickness, re_ref,
     if flags & FLAG_MACH:
         m = torch.clamp(w / a_sound, 0.0, 0.92)
         cl = cl / torch.sqrt(torch.clamp(1.0 - m * m, min=1e-3))
+        # Compressibility raises the lift slope but lowers the stall ceiling.
+        ceiling = cl_max * torch.clamp(
+            1.0 - 0.9 * torch.clamp(m - 0.35, min=0.0) ** 1.5, min=0.35)
+        cl = torch.clamp(cl, -ceiling, ceiling)
         m_dd = m_crit0 - 0.1 * torch.abs(cl) - thickness
         cd = cd + 20.0 * torch.clamp(m - m_dd, min=0.0) ** 4
     return cl, torch.clamp(cd, min=1e-5)
@@ -87,7 +91,7 @@ def _state(torch, phi, g):
                     min=1e-3).maximum(g["v_inf"].abs())
     cl, cd = _corrections(torch, cl0, cd0, w, g["chord"], g["rho"], g["mu"],
                           g["a_sound"], g["thickness"], g["re_ref"], g["m_crit0"],
-                          g["flags"])
+                          g["cl_max"], g["flags"])
     cn = cl * cp - cd * sp
     ct = cl * sp + cd * cp
     res = (g["omega_r"] * (4.0 * f * sp * sp - g["sigma"] * cn)
@@ -104,7 +108,7 @@ def solve_batch_torch(stations: BladeStations, rpm: np.ndarray, v_inf: np.ndarra
     td = torch.float32 if (dtype == "float32" or dev.type == "mps") else torch.float64
 
     alpha_grid, cl_tab, cd_tab = tables
-    thickness, re_ref, m_crit0 = stations.section_params()
+    thickness, re_ref, m_crit0, cl_max = stations.section_params()
     geom = stations.geometry
 
     def row(a):
@@ -116,7 +120,7 @@ def solve_batch_torch(stations: BladeStations, rpm: np.ndarray, v_inf: np.ndarra
     g: dict[str, Any] = {
         "r": row(stations.r), "chord": row(stations.chord), "twist": row(stations.twist),
         "sigma": row(stations.solidity), "thickness": row(thickness),
-        "re_ref": row(re_ref), "m_crit0": row(m_crit0),
+        "re_ref": row(re_ref), "m_crit0": row(m_crit0), "cl_max": row(cl_max),
         "cl_tab": torch.as_tensor(np.ascontiguousarray(cl_tab), dtype=td, device=dev),
         "cd_tab": torch.as_tensor(np.ascontiguousarray(cd_tab), dtype=td, device=dev),
         "alpha0": float(alpha_grid[0]), "d_alpha": float(alpha_grid[1] - alpha_grid[0]),

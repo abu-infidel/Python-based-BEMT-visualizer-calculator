@@ -143,6 +143,21 @@ drag follows Lock's fourth-power rise past the drag-divergence Mach number,
 `ΔCd = 20 (M − M_dd)⁴`, with `M_dd` falling with both lift and thickness. This
 is why tip speed, not power, is what limits propeller RPM.
 
+**The amplified lift is then capped.** Prandtl–Glauert raises the lift-curve
+*slope*; maximum lift *falls* with Mach. Applying the amplification without a
+ceiling hands a transonic tip a lift coefficient it could never reach — on a
+Cessna 172 at redline it produced `Cl = 1.57` and `L/D = 160`, neither of which
+exists. The ceiling used is
+
+```
+Cl_max(M) = Cl_max(0) · max(1 − 0.9 (M − 0.35)^1.5, 0.35)
+```
+
+which is a smooth fit to the usual shape of measured high-subsonic `Cl_max`
+data, not a first-principles result. `Cl_max(0)` comes from the section's own
+polar and is carried per blade station. A drone propeller at `M_tip ≈ 0.3` never
+touches this; a light aircraft at `M_tip ≈ 0.75` lives in it.
+
 ### Deep stall
 
 During iteration the solver probes angles of attack no propeller ever sees. A
@@ -176,7 +191,64 @@ performance.
 
 ---
 
-## 5. Propeller/motor matching
+## 5. Sizing and design
+
+Analysis answers "what does this propeller do?". Sizing answers the two
+questions that come first.
+
+### How big? — the actuator disk
+
+Momentum theory alone bounds what any propeller of a given diameter can do. A
+disk of area `A` producing thrust `T` at speed `V` accelerates the air by an
+induced velocity `w`:
+
+```
+T = 2 ρ A w (V + w)   ⟹   w = −V/2 + sqrt(V²/4 + T/(2ρA))
+```
+
+with ideal power `P = T (V + w)` and shaft power `P/η_p`. The Froude efficiency
+`V/(V + w)` is the ceiling — no blade design beats it.
+
+Power falls monotonically with diameter, so **there is no interior optimum**.
+The diameter is chosen by the constraints: ground clearance (and gyroscopic and
+structural loads) at the big end, tip Mach number at the small end. Both are
+plotted by `diameter_sweep`.
+
+### What shape? — minimum induced loss
+
+Betz's condition: induced losses are least when the shed vortex sheet is a rigid
+helicoid translating aft at constant speed. That fixes the circulation
+distribution and with it the blade.
+
+Propwash implements the Adkins & Liebeck (1994) formulation, which iterates on
+the *displacement velocity ratio* `ζ`. For a trial `ζ`:
+
+```
+tan φ = (1 + ζ/2) / x,          x = Ω r / V
+F     = (2/π) arccos(exp(−f)),  f = (B/2)(1 − ξ)/sin φ_t
+G     = F x cos φ sin φ
+Wc    = 4π λ G V R ζ / (Cl B)
+```
+
+`Wc` is the product of resultant velocity and chord — Betz's condition in the
+form you can actually use. Dividing by `W` gives the chord; `α + φ` gives the
+twist. Integrating the loading gives thrust and power coefficients, which invert
+for a new `ζ`. It converges in about five iterations.
+
+Prandtl's tip loss appears here as a *design* constraint, in the circulation
+itself, rather than as an after-the-fact correction.
+
+Two limits worth knowing. The method needs `V > 0` — it is built on the advance
+ratio, and a static design point has no minimum-induced-loss solution in this
+form; size a static propeller with the disk method instead. And the classical
+formulation is incompressible: on a fast propeller that matters, because the
+blade it designs then over-produces by about 17% once compressibility is
+accounted for. Propwash therefore recomputes the section's angle of attack and
+drag at each station's local Mach number, so the blade is designed to *achieve*
+the target `Cl` rather than to achieve it only in incompressible flow. With that
+correction the design agrees with the independent BEMT solver to 1.4% on thrust.
+
+## 6. Propeller/motor matching
 
 A propeller has no RPM of its own. The first-order brushless DC model,
 
@@ -193,14 +265,33 @@ sixty times a second.
 That crossing is the operating point, and moving it is what every control in
 the program is really doing.
 
+A **piston engine** is modelled the same way but the curve has a different
+shape: torque peaks below rated speed and droops only gently, so there is no
+no-load speed to catch a too-fine propeller — it would simply over-rev, which is
+reported rather than silently bracketed. Power lapses with altitude faster than
+density alone, via the Gagg–Farrar relation `P/P_SL = σ − (1 − σ)/7.55`, and
+fuel flow follows from brake specific fuel consumption. Reduction gearing (a
+Rotax, say) divides propeller speed from crankshaft speed.
+
+Because an engine makes no torque below idle, its bracket starts there rather
+than at zero — otherwise the solver finds zero supply against zero demand and
+concludes, wrongly, that the engine cannot turn the propeller.
+
 ---
 
-## 6. What this model does not do
+## 7. What this model does not do
 
 - **Only the thrusting branch is bracketed.** Windmilling and propeller-brake
   states have their root outside `(0, π/2)`. Those elements are reported as
   non-converged — `converged_fraction < 1` — rather than returned as
   plausible-looking nonsense.
+- **Static power absorption is under-predicted for aircraft propellers.** At
+  V = 0 a cruise-pitched blade is partly stalled over much of its span, which is
+  where 2-D strip theory is least reliable. The Cessna 172 propeller comes out
+  absorbing roughly 30% less power than it really does, so static run-up RPM is
+  predicted high and the engine match reports an over-rev. Forward flight —
+  which is what sizing and cruise performance depend on — agrees well. Do not
+  size a propeller on its static numbers here.
 - **Strip theory.** Each station is independent. No radial flow, no
   hub/spinner blockage, no blade flexibility, no unsteady aerodynamics, no
   non-axial inflow, no ground effect.
@@ -235,3 +326,10 @@ reading if you want the full arguments.
   single-residual-in-φ idea, here adapted to the propeller convention.
 - McCormick, B. W. (1995). *Aerodynamics, Aeronautics and Flight Mechanics*.
   Good on the propeller coefficients and matching.
+- Adkins, C. N. & Liebeck, R. H. (1994). *Design of optimum propellers*. Journal
+  of Propulsion and Power 10(5). The minimum-induced-loss design method, and the
+  corrections that make Larrabee's version converge.
+- Larrabee, E. E. (1979). *Practical design of minimum induced loss propellers*.
+  SAE 790585. The engineering form of Betz's condition.
+- Gudmundsson, S. (2014). *General Aviation Aircraft Design*, ch. 15. The
+  actuator-disk sizing procedure, and the Gagg–Farrar piston power lapse.

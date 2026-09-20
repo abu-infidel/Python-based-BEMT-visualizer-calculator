@@ -177,13 +177,14 @@ def _reshape(out: dict[str, np.ndarray], shape: tuple[int, ...], n_st: int) -> d
 def _kernel_arrays(stations: BladeStations, tables) -> dict[str, np.ndarray]:
     """Flat, contiguous, float64 arrays ready to be handed to a kernel."""
     alpha_grid, cl_tab, cd_tab = tables
-    thickness, re_ref, m_crit0 = stations.section_params()
+    thickness, re_ref, m_crit0, cl_max = stations.section_params()
     c = np.ascontiguousarray
     return {
         "r": c(stations.r, np.float64), "chord": c(stations.chord, np.float64),
         "twist": c(stations.twist, np.float64), "sigma": c(stations.solidity, np.float64),
         "thickness": c(thickness, np.float64), "re_ref": c(re_ref, np.float64),
-        "m_crit0": c(m_crit0, np.float64), "dr": c(stations.dr, np.float64),
+        "m_crit0": c(m_crit0, np.float64), "cl_max": c(cl_max, np.float64),
+        "dr": c(stations.dr, np.float64),
         "cl_tab": c(cl_tab, np.float64).ravel(), "cd_tab": c(cd_tab, np.float64).ravel(),
         "n_alpha": int(cl_tab.shape[1]), "alpha0": float(alpha_grid[0]),
         "d_alpha": float(alpha_grid[1] - alpha_grid[0]),
@@ -239,7 +240,7 @@ class NumbaCPUBackend(Backend):
         span = [np.zeros(span_n) for _ in range(8)]
 
         kern(a["r"], a["chord"], a["twist"], a["sigma"], a["thickness"], a["re_ref"],
-             a["m_crit0"], a["dr"], a["cl_tab"], a["cd_tab"],
+             a["m_crit0"], a["cl_max"], a["dr"], a["cl_tab"], a["cd_tab"],
              rpm_to_rad_s(rpm), v_inf, thrust, torque, conv, *span,
              a["n_alpha"], a["alpha0"], a["d_alpha"], air.density, air.viscosity,
              air.sound_speed, stations.geometry.radius, stations.geometry.hub_radius,
@@ -286,7 +287,7 @@ class NumbaCUDABackend(Backend):
         if dev is None:
             dev = {k: cuda.to_device(a[k]) for k in
                    ("r", "chord", "twist", "sigma", "thickness", "re_ref",
-                    "m_crit0", "dr", "cl_tab", "cd_tab")}
+                    "m_crit0", "cl_max", "dr", "cl_tab", "cd_tab")}
             self._device_cache.clear()
             self._device_cache[key] = dev
 
@@ -301,7 +302,8 @@ class NumbaCUDABackend(Backend):
         blocks, threads = cuda_launch_config(n_cases, THREADS_PER_BLOCK)
         kern[blocks, threads](
             dev["r"], dev["chord"], dev["twist"], dev["sigma"], dev["thickness"],
-            dev["re_ref"], dev["m_crit0"], dev["dr"], dev["cl_tab"], dev["cd_tab"],
+            dev["re_ref"], dev["m_crit0"], dev["cl_max"], dev["dr"],
+            dev["cl_tab"], dev["cd_tab"],
             d_omega, d_v, d_t, d_q, d_c, *d_span,
             a["n_alpha"], a["alpha0"], a["d_alpha"], air.density, air.viscosity,
             air.sound_speed, stations.geometry.radius, stations.geometry.hub_radius,
@@ -349,7 +351,7 @@ class CupyBackend(Backend):
         if dev is None:
             dev = {k: cp.asarray(a[k], dtype=cp.float64) for k in
                    ("r", "chord", "twist", "sigma", "thickness", "re_ref",
-                    "m_crit0", "dr", "cl_tab", "cd_tab")}
+                    "m_crit0", "cl_max", "dr", "cl_tab", "cd_tab")}
             self._device_cache.clear()
             self._device_cache[key] = dev
 
@@ -363,7 +365,8 @@ class CupyBackend(Backend):
 
         kern((n_cases,), (threads,), (
             dev["r"], dev["chord"], dev["twist"], dev["sigma"], dev["thickness"],
-            dev["re_ref"], dev["m_crit0"], dev["dr"], dev["cl_tab"], dev["cd_tab"],
+            dev["re_ref"], dev["m_crit0"], dev["cl_max"], dev["dr"],
+            dev["cl_tab"], dev["cd_tab"],
             d_omega, d_v, d_t, d_q, d_c, *d_span,
             np.int32(n_st), np.int32(a["n_alpha"]), np.int32(n_cases),
             np.float64(a["alpha0"]), np.float64(a["d_alpha"]),
@@ -386,6 +389,48 @@ class CupyBackend(Backend):
 # ---------------------------------------------------------------------------
 # Torch backend (vectorised, runs on CUDA or MPS without a custom kernel)
 # ---------------------------------------------------------------------------
+
+class OpenCLBackend(Backend):
+    """Portable GPU path.  Runs on AMD, Intel, Apple -- and on a CPU runtime."""
+
+    name = "opencl"
+
+    def __init__(self, prefer: str = "gpu") -> None:
+        super().__init__()
+        self.prefer = prefer
+
+    @property                                            # type: ignore[override]
+    def priority(self) -> int:                           # noqa: D401
+        """Rank above the CPU paths only when this is really a GPU.
+
+        OpenCL on a CPU runtime (POCL, Intel's CPU device) is a correctness
+        win -- it exercises the same kernel -- but it is usually *slower* than
+        the threaded Numba path, so auto-selection should not prefer it.
+        """
+        info = self.probe()
+        if not info.available:
+            return 0
+        # Below numba-cuda (40) on an NVIDIA box -- native CUDA is normally
+        # faster there -- but above the CPU paths on any other GPU.
+        return 35 if "GPU" in info.detail.upper() else 15
+
+    def _probe(self) -> BackendInfo:
+        from .opencl import available_devices, describe_device, pick_device
+        if not available_devices():
+            return BackendInfo(self.name, False, reason="no OpenCL platform found")
+        try:
+            _, device = pick_device(self.prefer)
+        except RuntimeError as exc:
+            return BackendInfo(self.name, False, reason=str(exc))
+        import pyopencl as cl
+        return BackendInfo(self.name, True, device.name.strip(),
+                           f"PyOpenCL {cl.VERSION_TEXT}, {describe_device(device)}")
+
+    def _run(self, stations, rpm, v_inf, air, opts, tables, want_spanwise):
+        from .opencl import solve_batch_opencl
+        return solve_batch_opencl(stations, rpm, v_inf, air, opts, tables,
+                                  want_spanwise, self.prefer)
+
 
 class TorchBackend(Backend):
     name = "torch"
@@ -414,7 +459,8 @@ _REGISTRY: dict[str, Backend] = {}
 
 def _registry() -> dict[str, Backend]:
     if not _REGISTRY:
-        for cls in (NumpyBackend, NumbaCPUBackend, TorchBackend, NumbaCUDABackend, CupyBackend):
+        for cls in (NumpyBackend, NumbaCPUBackend, TorchBackend, OpenCLBackend,
+                    NumbaCUDABackend, CupyBackend):
             _REGISTRY[cls.name] = cls()
     return _REGISTRY
 
@@ -463,5 +509,5 @@ def describe_environment() -> str:
 
 
 __all__ = ["Backend", "BackendInfo", "NumpyBackend", "NumbaCPUBackend",
-           "NumbaCUDABackend", "CupyBackend", "TorchBackend",
+           "NumbaCUDABackend", "CupyBackend", "TorchBackend", "OpenCLBackend",
            "get_backend", "list_backends", "describe_environment"]

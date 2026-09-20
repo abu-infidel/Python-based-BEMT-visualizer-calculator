@@ -16,6 +16,8 @@ rich>=13.0
 # Optional extras -- install what your platform supports:
 #   pip install "PySide6>=6.5" "pyqtgraph>=0.13" PyOpenGL      # desktop GUI
 #   pip install cupy-cuda12x                                   # raw CUDA C kernels
+#   pip install pyopencl                                       # GPU without CUDA (AMD/Intel/Apple)
+#     ...plus a runtime: pocl-opencl-icd (CPU) or your vendor's ICD
 #   pip install torch                                          # Torch GPU path
 #   pip install trimesh                                        # mesh export
 #   pip install nvidia-cuda-nvrtc-cu12                         # compile-check CUDA without a GPU

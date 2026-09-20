@@ -27,7 +27,9 @@ from ..atmosphere import isa
 from ..bemt.core import OperatingPoint, SolverOptions
 from ..bemt.solver import PropellerSolver
 from ..bemt.sweep import j_sweep, match_operating_point
-from ..geometry import BladeGeometry, get_preset, list_presets
+from ..engine import get_engine, list_engines
+from ..geometry import (AIRCRAFT_PRESETS, DEFAULT_PRESET, BladeGeometry,
+                        get_preset, list_presets)
 from ..mesh import build_propeller_mesh
 from ..motor import get_motor, list_motors
 from ..units import INCH
@@ -60,8 +62,9 @@ class PropwashWindow:
         self.mesh_span, self.mesh_chord = int(mesh_span), int(mesh_chord)
         configure_pyqtgraph(dark)
 
-        self.geometry: BladeGeometry = get_preset(preset or list_presets()[0])
+        self.geometry: BladeGeometry = get_preset(preset or DEFAULT_PRESET)
         self.motor = get_motor(motor or list_motors()[2])
+        self.engine = get_engine(list_engines()[0])
         self.options = SolverOptions(n_elements=int(n_elements))
         self.solver = PropellerSolver(self.geometry, self.options, backend)
         self.air = isa(0.0)
@@ -88,6 +91,7 @@ class PropwashWindow:
         self._timer.setInterval(60)
         self._timer.timeout.connect(self._run_solve)
 
+        self._sync_powerplant()
         self._rebuild_geometry()
         self._run_solve()
 
@@ -105,7 +109,7 @@ class PropwashWindow:
 
         self.s_blades = LabeledSlider("Blades", 1, 8, self.geometry.n_blades, 1,
                                       fmt="{:.0f}", on_change=remesh, dark=d)
-        self.s_diameter = LabeledSlider("Diameter", 3, 30, self.geometry.diameter / INCH,
+        self.s_diameter = LabeledSlider("Diameter", 3, 120, self.geometry.diameter / INCH,
                                         0.25, "in", "{:.2f}", remesh, d)
         self.s_pitch = LabeledSlider("Collective", -12, 18, 0.0, 0.25, "deg",
                                      "{:+.2f}", remesh, d)
@@ -127,11 +131,25 @@ class PropwashWindow:
                                 "torque balance instead of being set by hand")
         self.b_match.toggled.connect(mark)
 
-        self.s_rpm = LabeledSlider("Shaft speed", 200, 30000, 8000, 50, "rpm",
+        self.s_rpm = LabeledSlider("Shaft speed", 100, 30000, 2400, 10, "rpm",
                                    "{:,.0f}", mark, d)
-        self.s_speed = LabeledSlider("Airspeed", 0, 80, 0.0, 0.5, "m/s", "{:.1f}", mark, d)
+        self.s_speed = LabeledSlider("Airspeed", 0, 120, 0.0, 0.5, "m/s", "{:.1f}", mark, d)
         self.s_alt = LabeledSlider("Altitude", 0, 8000, 0.0, 100, "m", "{:,.0f}", mark, d)
         self.s_disa = LabeledSlider("dISA", -30, 40, 0.0, 1, "K", "{:+.0f}", mark, d)
+
+        # An aircraft propeller wants a piston engine; a model one wants a
+        # brushless motor.  The torque curves differ in shape, so the panel
+        # switches rather than trying to serve both.
+        self.c_pptype = W.QComboBox()
+        self.c_pptype.addItems(["Piston engine", "Electric motor"])
+        self.c_pptype.setCurrentIndex(0 if self.geometry.name in AIRCRAFT_PRESETS else 1)
+        self.c_pptype.currentIndexChanged.connect(self._on_pptype)
+
+        self.c_engine = W.QComboBox(); self.c_engine.addItems(list_engines())
+        self.c_engine.setCurrentText(self.engine.name)
+        self.c_engine.currentTextChanged.connect(self._on_engine)
+        self.s_hp = LabeledSlider("Rated power", 40, 400, self.engine.rated_power_hp,
+                                  5, "hp", "{:.0f}", mark, d)
 
         self.c_motor = W.QComboBox(); self.c_motor.addItems(list_motors())
         self.c_motor.setCurrentText(self.motor.name)
@@ -251,7 +269,9 @@ class PropwashWindow:
             labelled("Tip section", self.c_tip, d)]))
         col.addWidget(group("Flight condition", [
             self.b_match, self.s_rpm, self.s_speed, self.s_alt, self.s_disa]))
-        col.addWidget(group("Motor", [
+        col.addWidget(group("Powerplant", [
+            labelled("Type", self.c_pptype, d),
+            labelled("Engine", self.c_engine, d), self.s_hp,
             labelled("Motor", self.c_motor, d), self.s_kv, self.s_cells,
             self.s_imax, self.s_throttle]))
         col.addWidget(group("Solver", [
@@ -335,8 +355,10 @@ class PropwashWindow:
             self.s_pitch.set_value(math.degrees(g.pitch_offset))
             self.c_root.setCurrentText(g.root_airfoil)
             self.c_tip.setCurrentText(g.tip_airfoil)
+            self.c_pptype.setCurrentIndex(0 if name in AIRCRAFT_PRESETS else 1)
         finally:
             self._muted = False
+        self._sync_powerplant()
         self._schedule(True)
 
     def _on_motor(self, name: str) -> None:
@@ -350,6 +372,27 @@ class PropwashWindow:
         finally:
             self._muted = False
         self._schedule(False)
+
+    def _on_engine(self, name: str) -> None:
+        self._muted = True
+        try:
+            self.engine = get_engine(name)
+            self.s_hp.set_value(self.engine.rated_power_hp)
+        finally:
+            self._muted = False
+        self._schedule(False)
+
+    def _on_pptype(self, _index: int) -> None:
+        self._sync_powerplant()
+        self._schedule(False)
+
+    def _sync_powerplant(self) -> None:
+        engine = self.c_pptype.currentIndex() == 0
+        self.c_engine.parentWidget().setVisible(engine)
+        self.s_hp.widget.setVisible(engine)
+        self.c_motor.parentWidget().setVisible(not engine)
+        for slider in (self.s_kv, self.s_cells, self.s_imax):
+            slider.widget.setVisible(not engine)
 
     def _on_backend(self, name: str) -> None:
         self.solver.use_backend(name)
@@ -378,6 +421,10 @@ class PropwashWindow:
         self.solver.geometry = self.geometry
 
     def _current_motor(self):
+        """The selected powerplant, with the panel's overrides applied."""
+        if self.c_pptype.currentIndex() == 0:
+            from ..units import HORSEPOWER
+            return replace(self.engine, rated_power=self.s_hp.value * HORSEPOWER)
         return replace(self.motor, kv=self.s_kv.value, cells=int(self.s_cells.value),
                        voltage=3.7 * int(self.s_cells.value),
                        max_current=self.s_imax.value)
@@ -449,7 +496,10 @@ class PropwashWindow:
             self.cards["eta"].set(f"{r.efficiency * 100:.1f}%", f"J = {r.j:.3f}")
         else:
             self.cards["eta"].set(f"{r.figure_of_merit:.3f}", "figure of merit")
-        if self.match is not None:
+        if self.match is not None and "fuel_gph" in self.match.extras:
+            self.cards["current"].set(f"{self.match.extras['fuel_gph']:.1f} gph",
+                                      f"{self.match.extras['power_fraction'] * 100:.0f}% rated")
+        elif self.match is not None:
             self.cards["current"].set(f"{self.match.current:.1f} A",
                                       f"{self.match.electrical_power:.0f} W in")
         else:

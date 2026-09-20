@@ -18,7 +18,7 @@ outrunner driven by an ESC remarkably well:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import numpy as np
@@ -143,36 +143,70 @@ class MatchPoint:
     system_efficiency: float
     converged: bool
     throttle: float = 1.0
+    #: Powerplant-specific readouts -- amps for a motor, fuel flow for an engine.
+    extras: dict = field(default_factory=dict)
 
     def describe(self) -> str:
-        return (f"{self.rpm:.0f} rpm | T={self.thrust:.2f} N ({self.thrust / 9.80665 * 1000:.0f} gf) | "
-                f"{self.current:.1f} A | {self.electrical_power:.0f} W electrical | "
+        head = f"{self.rpm:.0f} rpm | T={self.thrust:.0f} N ({self.thrust / 4.4482216:.0f} lbf)"
+        if "fuel_gph" in self.extras:
+            return (f"{head} | {self.shaft_power / 745.699872:.0f} hp "
+                    f"({self.extras['power_fraction'] * 100:.0f}% rated) | "
+                    f"{self.extras['fuel_gph']:.1f} gph")
+        return (f"{self.rpm:.0f} rpm | T={self.thrust:.2f} N "
+                f"({self.thrust / 9.80665 * 1000:.0f} gf) | {self.current:.1f} A | "
+                f"{self.electrical_power:.0f} W electrical | "
                 f"motor eta={self.motor_efficiency * 100:.0f}%")
+
+
+def powerplant_torque(powerplant, rpm, throttle: float = 1.0, air=None) -> np.ndarray:
+    """Shaft torque from either a motor or an engine.
+
+    :class:`~propwash.engine.PistonEngine` takes an atmosphere (its power lapses
+    with density); :class:`MotorSpec` does not.  Rather than branch on the type,
+    try the richer signature and fall back.
+    """
+    try:
+        return np.asarray(powerplant.shaft_torque(rpm, throttle, air), dtype=float)
+    except TypeError:
+        return np.asarray(powerplant.shaft_torque(rpm, throttle), dtype=float)
 
 
 def match_rpm(prop_torque: Callable[[np.ndarray], np.ndarray], motor: MotorSpec,
               throttle: float = 1.0, rpm_max: float | None = None,
-              tol: float = 0.5, max_iter: int = 60) -> tuple[float, bool]:
-    """Find the RPM where propeller torque demand equals motor torque supply.
+              tol: float = 0.5, max_iter: int = 60, rpm_min: float | None = None,
+              air=None) -> tuple[float, bool]:
+    """Find the RPM where propeller torque demand equals shaft torque supply.
 
-    Both curves are monotone in opposite directions over the operating range --
-    propeller torque rises as RPM^2, motor torque falls linearly -- so the
-    difference has exactly one sign change and bisection is unconditionally
-    safe.  No initial guess required, which matters when the GUI is calling this
-    sixty times a second with wildly different geometry.
+    Over the operating range the two curves move in opposite directions --
+    propeller torque rises as RPM^2, shaft torque is flat or falling -- so the
+    difference has one sign change and bisection is unconditionally safe.  No
+    initial guess is required, which matters when a GUI calls this sixty times a
+    second with wildly different geometry.
+
+    ``rpm_min`` matters for piston engines: they produce no torque below idle,
+    so a bracket that starts at 1 rpm finds zero supply against zero demand and
+    concludes, wrongly, that the engine cannot turn the propeller.  It defaults
+    to the powerplant's idle speed when it has one.
     """
     hi = rpm_max if rpm_max is not None else motor.no_load_rpm(throttle)
     hi = max(hi, 1.0)
-    lo = 1.0
 
-    f = lambda n: float(motor.shaft_torque(np.array([n]), throttle)[0]   # noqa: E731
+    if rpm_min is None:
+        idle = getattr(motor, "idle_rpm", None)
+        gear = getattr(motor, "gear_ratio", 1.0) or 1.0
+        rpm_min = (idle / gear * 1.02) if idle else 1.0
+    lo = max(float(rpm_min), 1.0)
+    if lo >= hi:
+        return hi, False
+
+    f = lambda n: float(powerplant_torque(motor, np.array([n]), throttle, air)[0]  # noqa: E731
                         - np.asarray(prop_torque(np.array([n]))).ravel()[0])
 
     f_lo, f_hi = f(lo), f(hi)
     if f_lo <= 0.0:
-        return 0.0, False           # motor cannot even break the prop loose
+        return 0.0, False           # cannot even break the propeller loose
     if f_hi > 0.0:
-        return hi, False            # prop never absorbs the available power
+        return hi, False            # propeller never absorbs the available power
 
     for _ in range(max_iter):
         mid = 0.5 * (lo + hi)
@@ -186,4 +220,5 @@ def match_rpm(prop_torque: Callable[[np.ndarray], np.ndarray], motor: MotorSpec,
 
 
 __all__ = ["MotorSpec", "MOTOR_PRESETS", "DEFAULT_MOTOR", "get_motor", "list_motors",
-           "MatchPoint", "match_rpm", "rad_s_to_rpm", "rpm_to_rad_s"]
+           "MatchPoint", "match_rpm", "powerplant_torque", "rad_s_to_rpm",
+           "rpm_to_rad_s"]

@@ -36,7 +36,12 @@ def test_window_builds_and_solves(window):
     assert window.result is not None
     assert window.result.thrust > 0.0
     assert window.mesh is not None and window.mesh.n_faces > 0
-    assert window.match is not None and window.match.converged
+    # The default is a cruise-pitched aircraft propeller at V = 0, where BEMT
+    # under-predicts power absorption and the match reports an over-rev rather
+    # than converging.  That is the honest result, so assert it is *reported*,
+    # not that it converges.
+    assert window.match is not None
+    assert window.match.rpm > 0.0
 
 
 def test_metric_cards_are_populated(window):
@@ -61,17 +66,57 @@ def test_diverging_field_legend_is_centred_on_zero(window):
     assert window.legend._vmin == pytest.approx(-window.legend._vmax)
 
 
-def test_collective_slows_the_propeller_and_adds_thrust(window):
+def test_default_pairs_an_aircraft_propeller_with_a_piston_engine(window):
+    """A 75-inch propeller on a 1000 kv drone motor is not a case worth showing."""
+    from propwash.geometry import AIRCRAFT_PRESETS
+    assert window.geometry.name in AIRCRAFT_PRESETS
+    assert window.c_pptype.currentIndex() == 0
+    assert "fuel_gph" in window.match.extras
+    assert 1500.0 < window.result.rpm < 3000.0
+
+
+def test_switching_to_a_model_propeller_switches_the_powerplant(window):
+    window.c_preset.setCurrentText("APC 10x5 (sport)")
+    window._run_solve()
+    assert window.c_pptype.currentIndex() == 1
+    assert window.result.rpm > 5000.0
+    window.c_preset.setCurrentText("Cessna 172 (McCauley 75x57)")
+    window._run_solve()
+
+
+def test_collective_loads_the_powerplant_down(window):
+    """More pitch always costs RPM; that holds stalled or not."""
     window.s_pitch.set_value(0.0, notify=True)
     window._run_solve()
-    base_rpm, base_thrust = window.result.rpm, window.result.thrust
+    base_rpm = window.result.rpm
 
     window.s_pitch.set_value(5.0, notify=True)
     window._run_solve()
-    assert window.result.rpm < base_rpm, "more pitch must load the motor down"
-    assert window.result.thrust > base_thrust
+    assert window.result.rpm < base_rpm
 
     window.s_pitch.set_value(0.0, notify=True)
+    window._run_solve()
+
+
+def test_collective_adds_thrust_in_forward_flight(window):
+    """Thrust rises with pitch while the blade is attached.
+
+    At V = 0 a cruise-pitched propeller is already near stall, so adding
+    collective can *reduce* thrust -- correct physics, but the wrong place to
+    test the coupling.  In cruise the sections are attached and the sign is
+    unambiguous.
+    """
+    window.s_speed.set_value(50.0, notify=True)
+    window.s_pitch.set_value(-2.0, notify=True)
+    window._run_solve()
+    flat = window.result.thrust
+
+    window.s_pitch.set_value(2.0, notify=True)
+    window._run_solve()
+    assert window.result.thrust > flat
+
+    window.s_pitch.set_value(0.0, notify=True)
+    window.s_speed.set_value(0.0, notify=True)
     window._run_solve()
 
 

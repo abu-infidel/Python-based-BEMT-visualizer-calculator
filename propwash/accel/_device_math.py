@@ -84,8 +84,19 @@ def prandtl_factor(phi, r, r_tip, r_hub, n_blades, flags):
     return f
 
 
+def mach_lift_ceiling(mach, cl_max):
+    """Maximum attainable |Cl| at a given Mach number (see the NumPy twin)."""
+    excess = mach - 0.35
+    if excess < 0.0:
+        excess = 0.0
+    factor = 1.0 - 0.9 * math.pow(excess, 1.5)
+    if factor < 0.35:
+        factor = 0.35
+    return cl_max * factor
+
+
 def apply_corrections(cl, cd, w, chord, rho, mu, a_sound, thickness, re_ref,
-                      m_crit0, flags):
+                      m_crit0, cl_max, flags):
     """Reynolds and compressibility scaling, identical to the NumPy twin."""
     if flags & FLAG_REYNOLDS:
         re = rho * w * chord / mu
@@ -118,6 +129,12 @@ def apply_corrections(cl, cd, w, chord, rho, mu, a_sound, thickness, re_ref,
         if denom < 1.0e-3:
             denom = 1.0e-3
         cl /= math.sqrt(denom)
+        # Compressibility raises the lift slope but lowers the stall ceiling.
+        ceiling = mach_lift_ceiling(m, cl_max)
+        if cl > ceiling:
+            cl = ceiling
+        elif cl < -ceiling:
+            cl = -ceiling
         m_dd = m_crit0 - 0.1 * math.fabs(cl) - thickness
         dm = m - m_dd
         if dm > 0.0:
@@ -128,7 +145,7 @@ def apply_corrections(cl, cd, w, chord, rho, mu, a_sound, thickness, re_ref,
     return cl, cd
 
 
-def element_state(phi, twist, r, chord, sigma, thickness, re_ref, m_crit0,
+def element_state(phi, twist, r, chord, sigma, thickness, re_ref, m_crit0, cl_max,
                   base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
                   omega_r, v_inf, rho, mu, a_sound, r_tip, r_hub, n_blades, flags):
     """Full element state at a trial inflow angle.
@@ -165,7 +182,7 @@ def element_state(phi, twist, r, chord, sigma, thickness, re_ref, m_crit0,
         w = vmin
 
     cl, cd = apply_corrections(cl0, cd0, w, chord, rho, mu, a_sound,
-                               thickness, re_ref, m_crit0, flags)
+                               thickness, re_ref, m_crit0, cl_max, flags)
 
     cn = cl * cp - cd * sp
     ct = cl * sp + cd * cp
@@ -175,7 +192,7 @@ def element_state(phi, twist, r, chord, sigma, thickness, re_ref, m_crit0,
     return residual, w, cl, cd, cn, ct, f_loss, alpha
 
 
-def solve_phi(twist, r, chord, sigma, thickness, re_ref, m_crit0,
+def solve_phi(twist, r, chord, sigma, thickness, re_ref, m_crit0, cl_max,
               base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
               omega_r, v_inf, rho, mu, a_sound, r_tip, r_hub, n_blades,
               flags, n_bisect, phi_lo, phi_hi):
@@ -189,11 +206,11 @@ def solve_phi(twist, r, chord, sigma, thickness, re_ref, m_crit0,
     hi = phi_hi
 
     r_lo = element_state(lo, twist, r, chord, sigma, thickness, re_ref, m_crit0,
-                         base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
+                         cl_max, base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
                          omega_r, v_inf, rho, mu, a_sound, r_tip, r_hub,
                          n_blades, flags)[0]
     r_hi = element_state(hi, twist, r, chord, sigma, thickness, re_ref, m_crit0,
-                         base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
+                         cl_max, base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
                          omega_r, v_inf, rho, mu, a_sound, r_tip, r_hub,
                          n_blades, flags)[0]
 
@@ -202,7 +219,7 @@ def solve_phi(twist, r, chord, sigma, thickness, re_ref, m_crit0,
     for _ in range(n_bisect):
         mid = 0.5 * (lo + hi)
         r_mid = element_state(mid, twist, r, chord, sigma, thickness, re_ref,
-                              m_crit0, base, n_alpha, alpha0, d_alpha,
+                              m_crit0, cl_max, base, n_alpha, alpha0, d_alpha,
                               cl_tab, cd_tab, omega_r, v_inf, rho, mu, a_sound,
                               r_tip, r_hub, n_blades, flags)[0]
         if (r_lo * r_mid) <= 0.0:
@@ -221,5 +238,6 @@ def solve_phi(twist, r, chord, sigma, thickness, re_ref, m_crit0,
 
 
 __all__ = ["wrap_pi", "interp_table", "prandtl_factor", "apply_corrections",
+           "mach_lift_ceiling",
            "element_state", "solve_phi", "PI", "TWO_PI", "HALF_PI",
            "FLAG_TIP_LOSS", "FLAG_HUB_LOSS", "FLAG_REYNOLDS", "FLAG_MACH"]

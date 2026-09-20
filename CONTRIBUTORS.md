@@ -26,17 +26,21 @@ Worth stating plainly, because AI-written code invites the question:
 
 **Checked by running it.** The ISA implementation against the published
 standard-atmosphere table; every compute backend diffed against the NumPy
-reference (agreement ~1e-14 relative); the CUDA kernel executed under
+reference (agreement ~1e-14 relative); the OpenCL kernel *executed* on a POCL
+CPU device, not merely compiled; the CUDA kernel executed under
 `NUMBA_ENABLE_CUDASIM`; the raw CUDA C compiled to PTX by NVRTC for compute_75
-through compute_90; the PyTorch path forced onto CPU; both GUIs driven
-headlessly and screenshotted; every notebook cell executed end to end. 166
-tests pass.
+through compute_90; the PyTorch path forced onto CPU; the Adkins–Liebeck design
+cross-checked against the independent BEMT solver (1.4% on thrust); the Cessna
+172's trim speed against its published cruise figures; both GUIs driven
+headlessly and screenshotted; every notebook cell executed end to end. 220 tests
+pass.
 
 **Not checked.** No GPU was available in the environment where this was
 written, so the CUDA backends have never executed on real hardware — only in
-simulation and compilation. Predictions were compared against *published*
-propeller data, not against anything measured for this project; they land
-roughly 10% low, which is the expected direction and size of BEMT error.
+simulation and compilation, and OpenCL only on a CPU device. Predictions were
+compared against *published* data, not against anything measured for this
+project. Static thrust for aircraft propellers is the weakest part of the model
+and is documented as such in `docs/PHYSICS.md`.
 
 `docs/PHYSICS.md` lists the model's limits in full.
 

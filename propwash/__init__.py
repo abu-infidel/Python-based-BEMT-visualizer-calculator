@@ -30,9 +30,14 @@ from .bemt.core import BEMTResult, OperatingPoint, SolverOptions
 from .bemt.solver import PropellerSolver, solve, solve_grid, spanwise_frame
 from .bemt.sweep import (SweepResult, envelope_map, j_sweep, match_operating_point,
                          pitch_rpm_map, rpm_sweep, thrust_required_speed)
-from .geometry import (PROP_PRESETS, BladeGeometry, Distribution, get_preset,
-                       list_presets)
+from .engine import (ENGINE_PRESETS, DEFAULT_ENGINE, PistonEngine, get_engine,
+                     list_engines)
+from .geometry import (AIRCRAFT_PRESETS, DRONE_PRESETS, PROP_PRESETS,
+                       BladeGeometry, Distribution, get_preset, list_presets)
 from .motor import MOTOR_PRESETS, MotorSpec, get_motor, list_motors
+from .sizing import (BladeDesign, DiskSizing, adkins_liebeck_design,
+                     diameter_sweep, drag_from_weight, momentum_sizing,
+                     verify_design)
 from .version import PROJECT_NAME, PROJECT_TAGLINE, __version__
 
 _LAZY = {
@@ -69,8 +74,13 @@ __all__ = [
     "AnalyticPolar", "TablePolar", "AIRFOIL_LIBRARY", "get_airfoil", "list_airfoils",
     # geometry
     "BladeGeometry", "Distribution", "PROP_PRESETS", "get_preset", "list_presets",
-    # motor
+    "AIRCRAFT_PRESETS", "DRONE_PRESETS",
+    # powerplants
     "MotorSpec", "MOTOR_PRESETS", "get_motor", "list_motors",
+    "PistonEngine", "ENGINE_PRESETS", "DEFAULT_ENGINE", "get_engine", "list_engines",
+    # sizing and design
+    "DiskSizing", "BladeDesign", "momentum_sizing", "diameter_sweep",
+    "drag_from_weight", "adkins_liebeck_design", "verify_design",
     # solver
     "OperatingPoint", "SolverOptions", "BEMTResult", "PropellerSolver",
     "solve", "solve_grid", "spanwise_frame",

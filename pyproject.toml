@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "propwash"
 version = "0.1.0"
-description = "GPU-accelerated blade-element-momentum propeller laboratory with a 3-D visualiser"
+description = "Blade-element-momentum propeller laboratory: 3-D visualiser, sizing, and optional GPU acceleration"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -27,17 +27,19 @@ Documentation = "https://github.com/abu-infidel/Python-based-BEMT-visualizer-cal
 [project.optional-dependencies]
 accel = ["numba>=0.58"]
 cuda = ["numba>=0.58", "cupy-cuda12x"]
+opencl = ["pyopencl"]
 torch = ["torch"]
 plot = ["matplotlib>=3.7", "pandas>=2.0", "plotly>=5.18"]
-notebook = ["ipywidgets>=8.0", "plotly>=5.18", "pandas>=2.0", "matplotlib>=3.7"]
+notebook = ["ipywidgets>=8.0", "anywidget", "plotly>=5.18", "pandas>=2.0",
+            "matplotlib>=3.7"]
 desktop = ["PySide6>=6.5", "pyqtgraph>=0.13", "PyOpenGL", "matplotlib>=3.7"]
 cli = ["rich>=13.0"]
 mesh = ["trimesh"]
 dev = ["pytest>=7.4", "nvidia-cuda-nvrtc-cu12"]
 all = [
     "numba>=0.58", "matplotlib>=3.7", "pandas>=2.0", "plotly>=5.18",
-    "ipywidgets>=8.0", "rich>=13.0", "PySide6>=6.5", "pyqtgraph>=0.13",
-    "PyOpenGL", "trimesh", "pytest>=7.4",
+    "ipywidgets>=8.0", "anywidget", "rich>=13.0", "PySide6>=6.5",
+    "pyqtgraph>=0.13", "PyOpenGL", "pyopencl", "trimesh", "pytest>=7.4",
 ]
 
 [project.scripts]

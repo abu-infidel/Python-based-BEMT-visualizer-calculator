@@ -33,7 +33,9 @@ from ..atmosphere import isa
 from ..bemt.core import BEMTResult, OperatingPoint, SolverOptions
 from ..bemt.solver import PropellerSolver
 from ..bemt.sweep import j_sweep, match_operating_point, pitch_rpm_map
-from ..geometry import BladeGeometry, get_preset, list_presets
+from ..engine import PistonEngine, get_engine, list_engines
+from ..geometry import (AIRCRAFT_PRESETS, DEFAULT_PRESET, BladeGeometry,
+                        get_preset, list_presets)
 from ..mesh import build_propeller_mesh
 from ..motor import MotorSpec, get_motor, list_motors
 from ..units import INCH
@@ -98,8 +100,10 @@ class PropwashLab:
         self.mesh_span = int(mesh_span)
         self.mesh_chord = int(mesh_chord)
 
-        self.geometry: BladeGeometry = get_preset(preset or list_presets()[0])
+        self.geometry: BladeGeometry = get_preset(preset or DEFAULT_PRESET)
         self.motor: MotorSpec = get_motor(motor or list_motors()[2])
+        self.engine: PistonEngine = get_engine(list_engines()[0])
+        self.design = None
         self.options = SolverOptions(n_elements=int(n_elements))
         self.solver = PropellerSolver(self.geometry, self.options, backend)
         self.air = isa(0.0)
@@ -128,11 +132,20 @@ class PropwashLab:
         # --- propeller -----------------------------------------------------
         self.w_preset = w.Dropdown(options=list_presets(), value=self.geometry.name,
                                    description="Preset", layout=wide, style=style)
+        self.w_category = w.ToggleButtons(
+            options=[("Aircraft", "aircraft"), ("Drone / model", "drone"),
+                     ("All", "all")],
+            value="aircraft" if self.geometry.name in AIRCRAFT_PRESETS else "drone",
+            description="", layout=w.Layout(width="97%"))
+        self.w_category.observe(self._on_category, names="value")
         self.w_blades = w.IntSlider(value=self.geometry.n_blades, min=1, max=8, step=1,
                                     description="Blades", layout=slim, style=style,
                                     continuous_update=False)
+        # One range covers both worlds: a 6-inch micro propeller and a 100-inch
+        # aircraft one.  A per-category range would have to be reset before the
+        # value on every preset change, and silently clamps if it is not.
         self.w_diameter = w.FloatSlider(value=self.geometry.diameter / INCH, min=3.0,
-                                        max=30.0, step=0.25, description="Diameter [in]",
+                                        max=120.0, step=0.25, description="Diameter [in]",
                                         layout=slim, style=style, readout_format=".2f",
                                         continuous_update=False)
         self.w_pitch = w.FloatSlider(value=0.0, min=-12.0, max=18.0, step=0.25,
@@ -158,10 +171,10 @@ class PropwashLab:
             tooltips=["Shaft speed is solved from the propeller/motor torque balance",
                       "You set the shaft speed directly"],
             layout=w.Layout(width="97%"))
-        self.w_rpm = w.FloatSlider(value=8000.0, min=200.0, max=30000.0, step=50.0,
+        self.w_rpm = w.FloatSlider(value=2400.0, min=100.0, max=30000.0, step=10.0,
                                    description="Shaft speed", layout=slim, style=style,
                                    readout_format=".0f", continuous_update=False)
-        self.w_speed = w.FloatSlider(value=0.0, min=0.0, max=80.0, step=0.5,
+        self.w_speed = w.FloatSlider(value=0.0, min=0.0, max=120.0, step=0.5,
                                      description="Airspeed [m/s]", layout=slim,
                                      style=style, readout_format=".1f",
                                      continuous_update=False)
@@ -172,7 +185,23 @@ class PropwashLab:
                                     description="dISA [K]", layout=slim, style=style,
                                     continuous_update=False)
 
-        # --- motor ---------------------------------------------------------
+        # --- powerplant ----------------------------------------------------
+        # An aircraft propeller is driven by a piston engine and a model one by
+        # a brushless motor; the torque curves have different shapes, so the
+        # panel swaps rather than trying to serve both with one set of sliders.
+        self.w_pp_type = w.ToggleButtons(
+            options=[("Piston engine", "engine"), ("Electric motor", "motor")],
+            value="engine", description="",
+            tooltips=["Aircraft: torque peaks below rated speed and droops gently",
+                      "Model/drone: torque falls linearly to a no-load speed"],
+            layout=w.Layout(width="97%"))
+        self.w_engine = w.Dropdown(options=list_engines(), value=self.engine.name,
+                                   description="Engine", layout=wide, style=style)
+        self.w_engine_hp = w.FloatSlider(
+            value=self.engine.rated_power_hp, min=40.0, max=400.0, step=5.0,
+            description="Rated power [hp]", layout=slim, style=style,
+            readout_format=".0f", continuous_update=False)
+
         self.w_motor = w.Dropdown(options=list_motors(), value=self.motor.name,
                                   description="Motor", layout=wide, style=style)
         self.w_kv = w.FloatSlider(value=self.motor.kv, min=100.0, max=9000.0, step=10.0,
@@ -234,8 +263,161 @@ class PropwashLab:
         self.w_export = w.Button(description="Export blade (OBJ/STL/CSV)", icon="download",
                                  layout=w.Layout(width="250px"))
         self.out_export = w.Output()
+        self._build_sizing_controls()
 
         self._wire()
+
+    def _build_sizing_controls(self) -> None:
+        """Inputs for the sizing tab: what the aircraft needs, not what it has."""
+        w = self.W
+        wide = w.Layout(width="94%")
+        style = {"description_width": "150px"}
+
+        self.w_size_speed = w.FloatSlider(value=61.7, min=10.0, max=140.0, step=0.5,
+                                          description="Target speed [m/s]", layout=wide,
+                                          style=style, readout_format=".1f",
+                                          continuous_update=False)
+        self.w_size_mass = w.FloatSlider(value=1043.0, min=1.0, max=5000.0, step=1.0,
+                                         description="Gross mass [kg]", layout=wide,
+                                         style=style, readout_format=".0f",
+                                         continuous_update=False)
+        self.w_size_ld = w.FloatSlider(value=11.0, min=3.0, max=40.0, step=0.5,
+                                       description="Cruise L/D", layout=wide,
+                                       style=style, readout_format=".1f",
+                                       continuous_update=False)
+        self.w_size_drag = w.FloatText(value=0.0, description="…or drag [N]",
+                                       layout=wide, style=style)
+        self.w_size_alt = w.FloatSlider(value=2438.0, min=0.0, max=8000.0, step=100.0,
+                                        description="Altitude [m]", layout=wide,
+                                        style=style, readout_format=".0f",
+                                        continuous_update=False)
+        self.w_size_rpm = w.FloatSlider(value=2400.0, min=500.0, max=20000.0, step=10.0,
+                                        description="Propeller rpm", layout=wide,
+                                        style=style, readout_format=".0f",
+                                        continuous_update=False)
+        self.w_size_blades = w.IntSlider(value=2, min=1, max=8, step=1,
+                                         description="Blades", layout=wide, style=style,
+                                         continuous_update=False)
+        self.w_size_diam = w.FloatSlider(value=75.0, min=5.0, max=120.0, step=0.5,
+                                         description="Diameter [in]", layout=wide,
+                                         style=style, readout_format=".1f",
+                                         continuous_update=False)
+        self.w_size_cl = w.FloatSlider(value=0.65, min=0.2, max=1.1, step=0.01,
+                                       description="Design section $C_l$", layout=wide,
+                                       style=style, readout_format=".2f",
+                                       continuous_update=False)
+        self.w_size_eta = w.FloatSlider(value=0.82, min=0.5, max=0.95, step=0.01,
+                                        description="Assumed eta (disk sizing)",
+                                        layout=wide, style=style, readout_format=".2f",
+                                        continuous_update=False)
+        self.w_size_btn = w.Button(description="Size and design", icon="wrench",
+                                   button_style="primary",
+                                   layout=w.Layout(width="190px"))
+        self.w_size_use = w.Button(description="Use this design", icon="check",
+                                   layout=w.Layout(width="190px"), disabled=True)
+        self.out_size_cards = w.HTML()
+        self.out_size = w.Output()
+        self.w_size_btn.on_click(self._on_size)
+        self.w_size_use.on_click(self._on_use_design)
+
+    def _on_size(self, _btn) -> None:
+        import matplotlib.pyplot as plt
+        from ..atmosphere import isa
+        from ..sizing import (adkins_liebeck_design, diameter_sweep,
+                              drag_from_weight, momentum_sizing, verify_design)
+        from ..units import HORSEPOWER, INCH
+        from ..viz.sizing_plots import design_figure, diameter_sweep_figure
+
+        with self.out_size:
+            self.out_size.clear_output(wait=True)
+            air = isa(float(self.w_size_alt.value))
+            v = float(self.w_size_speed.value)
+            thrust = (float(self.w_size_drag.value) if self.w_size_drag.value > 0
+                      else drag_from_weight(float(self.w_size_mass.value),
+                                            float(self.w_size_ld.value)))
+            diameter = float(self.w_size_diam.value) * INCH
+            rpm = float(self.w_size_rpm.value)
+            blades = int(self.w_size_blades.value)
+
+            disk = momentum_sizing(thrust, v, diameter, air=air,
+                                   eta_p=float(self.w_size_eta.value), rpm=rpm)
+            sweep = diameter_sweep(thrust, v, np.linspace(0.3 * diameter,
+                                                          1.8 * diameter, 90),
+                                   air=air, eta_p=float(self.w_size_eta.value), rpm=rpm)
+
+            try:
+                design = adkins_liebeck_design(
+                    radius=diameter / 2.0, n_blades=blades, rpm=rpm, v_inf=v,
+                    thrust=thrust, air=air, design_cl=float(self.w_size_cl.value))
+                check = verify_design(design, air=air)
+            except (ValueError, RuntimeError) as exc:
+                self.design = None
+                self.w_size_use.disabled = True
+                print(f"design failed: {exc}")
+                return
+
+            self.design = design
+            self.w_size_use.disabled = not design.converged
+
+            cards = [
+                _metric_card("Required thrust", f"{thrust:,.0f} N",
+                             f"{thrust / 4.4482216:,.0f} lbf", "#2a78d6", self.dark),
+                _metric_card("Disk-theory power", f"{disk.shaft_power_hp:,.0f} hp",
+                             f"ideal {disk.ideal_power / 1000:.1f} kW", "#eb6834", self.dark),
+                _metric_card("Froude limit", f"{disk.ideal_efficiency * 100:.1f}%",
+                             "best any disk this size can do", "#1baf7a", self.dark),
+                _metric_card("Optimum blade", f"{design.efficiency * 100:.1f}%",
+                             f"{design.power / HORSEPOWER:.0f} hp, AF {design.activity_factor:.0f}",
+                             "#eda100", self.dark),
+                _metric_card("BEMT check", f"{check['thrust_error'] * 100:+.1f}%",
+                             f"thrust; eta {check['bemt_efficiency']:.3f}",
+                             "#4a3aa7", self.dark),
+                _metric_card("Tip Mach", f"{disk.tip_mach:.3f}",
+                             "helical, at this rpm",
+                             "#e34948" if disk.tip_mach > 0.85 else "#008300", self.dark),
+            ]
+            self.out_size_cards.value = _cards_html(cards, self.dark)
+
+            print(design.describe())
+            print(f"verified against the BEMT solver: thrust {check['thrust_error'] * 100:+.1f}%, "
+                  f"power {check['power_error'] * 100:+.1f}%, "
+                  f"eta {design.efficiency:.3f} (design) vs {check['bemt_efficiency']:.3f} (BEMT)")
+            if not design.converged:
+                print("\nthe design did not converge -- this diameter probably cannot "
+                      "make that thrust at this speed; try a larger diameter, more "
+                      "blades, or a lower design Cl")
+
+            f1 = diameter_sweep_figure(sweep, chosen=diameter, dark=self.dark)
+            plt.show(); plt.close(f1)
+            f2 = design_figure(design, compare=self.solver.stations, dark=self.dark)
+            plt.show(); plt.close(f2)
+
+    def _on_use_design(self, _btn) -> None:
+        """Load the designed blade as the current propeller and analyse it."""
+        if self.design is None:
+            return
+        geometry = self.design.to_geometry()
+        self.geometry = geometry
+        self.solver.geometry = geometry
+        self._busy = True
+        try:
+            self.w_diameter.value = geometry.diameter / INCH
+            self.w_blades.value = geometry.n_blades
+            self.w_hub.value = geometry.hub_radius_frac
+            self.w_pitch.value = 0.0
+            self.w_chord_scale.value = 1.0
+            self.w_speed.value = float(self.w_size_speed.value)
+            self.w_alt.value = float(self.w_size_alt.value)
+            self.w_mode.value = "fixed"
+            self.w_rpm.value = float(self.w_size_rpm.value)
+        finally:
+            self._busy = False
+        self.mesh = None
+        self.refresh(rebuild_mesh=True)
+        if self.tabs is not None:
+            self.tabs.selected_index = 0
+        with self.out_size:
+            print(f"\nloaded as the current propeller: {geometry.describe()}")
 
     def _make_figure_widget(self):
         """A live FigureWidget when one is available, else an Output fallback.
@@ -259,6 +441,7 @@ class PropwashLab:
         geo = (self.w_preset, self.w_blades, self.w_diameter, self.w_pitch,
                self.w_chord_scale, self.w_hub, self.w_root_af, self.w_tip_af)
         op = (self.w_mode, self.w_rpm, self.w_speed, self.w_alt, self.w_disa,
+              self.w_pp_type, self.w_engine, self.w_engine_hp,
               self.w_motor, self.w_kv, self.w_cells, self.w_imax, self.w_throttle,
               self.w_backend, self.w_elements, self.w_tiploss, self.w_hubloss,
               self.w_re, self.w_mach)
@@ -289,6 +472,10 @@ class PropwashLab:
             return
         if change["owner"] is self.w_motor:
             self._load_motor(change["new"])
+        if change["owner"] is self.w_engine:
+            self._load_engine(change["new"])
+        if change["owner"] is self.w_pp_type:
+            self._sync_powerplant_panel()
         if change["owner"] is self.w_backend:
             self.solver.use_backend(change["new"])
         if change["owner"] in (self.w_elements, self.w_tiploss, self.w_hubloss,
@@ -306,6 +493,28 @@ class PropwashLab:
             self._mark_charts_dirty()
             self.refresh(rebuild_mesh=False)
 
+    def _on_category(self, change) -> None:
+        """Filter the preset list, and keep the selection valid."""
+        names = list_presets(change["new"])
+        self._busy = True
+        try:
+            self.w_preset.options = names
+            if self.w_preset.value not in names:
+                self.w_preset.value = names[0]
+        finally:
+            self._busy = False
+        self._busy = True
+        try:
+            # A 10-inch model propeller at 110 knots is windmilling, which is
+            # correct but useless as a landing state after switching class.
+            self.w_speed.value = 0.0
+            self.w_alt.value = 0.0
+        finally:
+            self._busy = False
+        self._load_preset(self.w_preset.value)
+        self._rebuild_geometry(refresh=False)
+        self.refresh(rebuild_mesh=True)
+
     def _load_preset(self, name: str) -> None:
         self._busy = True
         try:
@@ -318,8 +527,12 @@ class PropwashLab:
             self.w_pitch.value = math.degrees(g.pitch_offset)
             self.w_root_af.value = g.root_airfoil
             self.w_tip_af.value = g.tip_airfoil
+            # A piston engine driving a 10-inch model propeller is not a case
+            # anyone wants; follow the preset's class.
+            self.w_pp_type.value = "engine" if name in AIRCRAFT_PRESETS else "motor"
         finally:
             self._busy = False
+        self._sync_powerplant_panel()
 
     def _load_motor(self, name: str) -> None:
         self._busy = True
@@ -331,6 +544,22 @@ class PropwashLab:
             self.w_imax.value = m.max_current
         finally:
             self._busy = False
+
+    def _load_engine(self, name: str) -> None:
+        self._busy = True
+        try:
+            e = get_engine(name)
+            self.engine = e
+            self.w_engine_hp.value = e.rated_power_hp
+        finally:
+            self._busy = False
+
+    def _sync_powerplant_panel(self) -> None:
+        engine = self.w_pp_type.value == "engine"
+        for widget in (self.w_engine, self.w_engine_hp):
+            widget.layout.display = "" if engine else "none"
+        for widget in (self.w_motor, self.w_kv, self.w_cells, self.w_imax):
+            widget.layout.display = "none" if engine else ""
 
     def _rebuild_geometry(self, refresh: bool = True) -> None:
         base = get_preset(self.w_preset.value)
@@ -359,7 +588,12 @@ class PropwashLab:
         self.solver.options = self.options
         self.solver.invalidate()
 
-    def _current_motor(self) -> MotorSpec:
+    def _current_motor(self):
+        """The powerplant currently selected, with the panel's overrides applied."""
+        if self.w_pp_type.value == "engine":
+            from ..units import HORSEPOWER
+            return replace(self.engine,
+                           rated_power=float(self.w_engine_hp.value) * HORSEPOWER)
         return replace(self.motor, kv=float(self.w_kv.value),
                        cells=int(self.w_cells.value),
                        voltage=3.7 * int(self.w_cells.value),
@@ -427,7 +661,17 @@ class PropwashLab:
         else:
             cards.append(_metric_card("Figure of merit", f"{r.figure_of_merit:.3f}",
                                       "hover (V = 0)", "#eda100", dark))
-        if self.match is not None:
+        if self.match is not None and "fuel_gph" in self.match.extras:
+            from ..units import HORSEPOWER
+            cards.append(_metric_card("Fuel flow",
+                                      f"{self.match.extras['fuel_gph']:.1f} gph",
+                                      f"{self.match.extras['fuel_lph']:.1f} L/h",
+                                      "#e87ba4", dark))
+            cards.append(_metric_card("Engine power",
+                                      f"{self.match.shaft_power / HORSEPOWER:.0f} hp",
+                                      f"{self.match.extras['power_fraction'] * 100:.0f}% rated",
+                                      "#4a3aa7", dark))
+        elif self.match is not None:
             cards.append(_metric_card("Current", f"{self.match.current:.1f} A",
                                       f"{self.match.electrical_power:.0f} W in",
                                       "#e87ba4", dark))
@@ -454,9 +698,15 @@ class PropwashLab:
                          f"— those elements are reported, not solved")
             tone = "warn"
         if self.match is not None and not self.match.converged:
-            notes.append("<b>no torque balance</b> — the motor either cannot turn this "
-                         "propeller or never loads up; try less pitch, a smaller "
-                         "diameter or more cells")
+            pp = self._current_motor()
+            ceiling = pp.no_load_rpm(float(self.w_throttle.value))
+            if self.match.rpm >= ceiling - 1.0:
+                notes.append("<b>propeller too fine</b> — it never loads the powerplant "
+                             "down to its limit, so this would over-rev; add pitch, "
+                             "diameter or blades")
+            else:
+                notes.append("<b>propeller too coarse</b> — the powerplant cannot turn "
+                             "it; reduce pitch or diameter")
             tone = "bad"
         self.out_status.value = _banner(" &nbsp;·&nbsp; ".join(notes), dark, tone)
 
@@ -513,7 +763,7 @@ class PropwashLab:
     def _render_tab(self, index: int | None) -> None:
         if index is None:
             return
-        names = ["3d", "span", "sweep", "map", "match", "bench", "export"]
+        names = ["3d", "span", "sweep", "map", "match", "bench", "size", "export"]
         if index >= len(names):
             return
         name = names[index]
@@ -655,16 +905,18 @@ class PropwashLab:
         """The assembled widget.  Display this."""
         w = self.W
         acc = w.Accordion(children=[
-            w.VBox([self.w_preset, self.w_blades, self.w_diameter, self.w_pitch,
-                    self.w_chord_scale, self.w_hub, self.w_root_af, self.w_tip_af]),
+            w.VBox([self.w_category, self.w_preset, self.w_blades, self.w_diameter,
+                    self.w_pitch, self.w_chord_scale, self.w_hub, self.w_root_af,
+                    self.w_tip_af]),
             w.VBox([self.w_mode, self.w_rpm, self.w_speed, self.w_alt, self.w_disa]),
-            w.VBox([self.w_motor, self.w_kv, self.w_cells, self.w_imax, self.w_throttle]),
+            w.VBox([self.w_pp_type, self.w_engine, self.w_engine_hp, self.w_motor,
+                    self.w_kv, self.w_cells, self.w_imax, self.w_throttle]),
             w.VBox([self.w_backend, self.w_elements, self.w_tiploss, self.w_hubloss,
                     self.w_re, self.w_mach]),
             w.VBox([self.w_field, self.w_slipstream,
                     w.HBox([self.w_spin, self.w_dark])]),
         ])
-        for i, title in enumerate(("Propeller", "Flight condition", "Motor",
+        for i, title in enumerate(("Propeller", "Flight condition", "Powerplant",
                                    "Solver", "View")):
             acc.set_title(i, title)
         acc.selected_index = 0
@@ -678,11 +930,25 @@ class PropwashLab:
             self.out_map,
             self.out_match,
             w.VBox([w.HBox([self.w_bench_btn, self.w_bench_n]), self.out_bench]),
+            w.VBox([
+                w.HTML("<div style='font:400 11.5px/1.6 system-ui,sans-serif;"
+                       "padding:2px 0 8px 0'>Size the disk from the thrust you need, "
+                       "then design the minimum-induced-loss blade that delivers it "
+                       "&mdash; and check the result against the BEMT solver, which "
+                       "uses completely different equations.</div>"),
+                w.HBox([w.VBox([self.w_size_speed, self.w_size_mass, self.w_size_ld,
+                                self.w_size_drag, self.w_size_alt],
+                               layout=w.Layout(width="49%")),
+                        w.VBox([self.w_size_rpm, self.w_size_diam, self.w_size_blades,
+                                self.w_size_cl, self.w_size_eta],
+                               layout=w.Layout(width="49%"))]),
+                w.HBox([self.w_size_btn, self.w_size_use]),
+                self.out_size_cards, self.out_size]),
             w.VBox([self.w_export, self.out_export]),
         ])
         for i, title in enumerate(("3-D blade", "Spanwise", "Advance ratio",
                                    "Pitch x RPM map", "Torque balance",
-                                   "Benchmark", "Export")):
+                                   "Benchmark", "Sizing and design", "Export")):
             self.tabs.set_title(i, title)
         self.tabs.observe(lambda ch: self._render_tab(ch["new"]), names="selected_index")
 

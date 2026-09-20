@@ -191,7 +191,7 @@ def match_operating_point(geometry: BladeGeometry, motor: MotorSpec,
                                 np.full(rpm_arr.size, float(v_inf)), air)
         return np.maximum(np.asarray(out["torque"], dtype=float).ravel(), 0.0)
 
-    rpm, converged = match_rpm(prop_torque, motor, throttle)
+    rpm, converged = match_rpm(prop_torque, motor, throttle, air=air)
 
     if rpm <= 0.0:
         return MatchPoint(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, False, throttle)
@@ -200,10 +200,28 @@ def match_operating_point(geometry: BladeGeometry, motor: MotorSpec,
     thrust = float(np.asarray(final["thrust"]).ravel()[0])
     torque = float(np.asarray(final["torque"]).ravel()[0])
     shaft = torque * rpm_to_rad_s(rpm)
+
+    if hasattr(motor, "fuel_flow_gph"):          # piston engine
+        extras = {
+            "fuel_gph": float(np.asarray(motor.fuel_flow_gph(rpm, throttle, air)).ravel()[0]),
+            "fuel_lph": float(np.asarray(motor.fuel_flow_lph(rpm, throttle, air)).ravel()[0]),
+            "power_fraction": float(np.asarray(
+                motor.power_fraction(rpm, throttle, air)).ravel()[0]),
+            "available_power": float(np.asarray(
+                motor.shaft_power(rpm, throttle, air)).ravel()[0]),
+        }
+        p_in = extras["available_power"]
+        return MatchPoint(
+            rpm=rpm, thrust=thrust, torque=torque, shaft_power=shaft,
+            electrical_power=p_in, current=0.0,
+            motor_efficiency=1.0,
+            system_efficiency=(thrust * v_inf / p_in) if p_in > 1e-9 else 0.0,
+            converged=converged, throttle=throttle, extras=extras,
+        )
+
     current = float(np.minimum(motor.current_at(np.array([rpm]), throttle),
                                motor.max_current)[0])
     p_elec = float(motor.electrical_power(np.array([rpm]), throttle)[0])
-
     return MatchPoint(
         rpm=rpm, thrust=thrust, torque=torque, shaft_power=shaft,
         electrical_power=p_elec, current=current,

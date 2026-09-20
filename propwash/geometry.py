@@ -319,12 +319,18 @@ class BladeStations:
         """``(alpha_grid, cl[n_stations, n_alpha], cd[n_stations, n_alpha])``."""
         return stack_tables(self.polars, n_alpha)
 
-    def section_params(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Per-station (thickness, re_ref, m_crit0) for the in-kernel corrections."""
+    def section_params(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Per-station ``(thickness, re_ref, m_crit0, cl_max)``.
+
+        ``cl_max`` bounds the Prandtl-Glauert lift amplification; without it a
+        transonic propeller tip is handed a lift coefficient it could never
+        reach.
+        """
         return (
             np.array([p.thickness for p in self.polars], dtype=np.float64),
             np.array([p.re_ref for p in self.polars], dtype=np.float64),
             np.array([p.m_crit0 for p in self.polars], dtype=np.float64),
+            np.array([p.max_lift() for p in self.polars], dtype=np.float64),
         )
 
 
@@ -415,7 +421,67 @@ _register(BladeGeometry(
     sweep=Distribution("parabolic", root=0.0, tip=0.05, power=2.5),
 ))
 
-DEFAULT_PRESET = "APC 10x5 (sport)"
+# ---------------------------------------------------------------------------
+# General-aviation propellers
+#
+# A light-aircraft propeller is a different animal from a model one, and the
+# numbers show it: two orders of magnitude more disk area, a tenth of the RPM,
+# and a tip that is already near its critical Mach number at redline.  That
+# last point is why a 172 is RPM-limited rather than power-limited, and it
+# falls straight out of the solver's compressibility model.
+#
+# Planforms follow published blade-station geometry for the type: relatively
+# narrow, widest around mid-span, structurally thick at the root and thin
+# outboard where Mach matters.  Sections run Clark Y inboard to a NACA 16-series
+# tip, which is the classic propeller combination for exactly that reason.
+# ---------------------------------------------------------------------------
+
+def _ga_blade(name: str, d_in: float, p_in: float, blades: int = 2,
+              hub_frac: float = 0.12, chord_scale: float = 1.0) -> BladeGeometry:
+    r = d_in * INCH / 2.0
+    return _register(BladeGeometry(
+        name=name, n_blades=blades, radius=r, hub_radius_frac=hub_frac,
+        chord=Distribution("spline",
+                           control_x=(0.12, 0.25, 0.40, 0.55, 0.70, 0.85, 0.95, 1.0),
+                           control_y=(0.085, 0.125, 0.150, 0.155, 0.148, 0.125, 0.085, 0.025)),
+        twist=constant_pitch_twist(p_in, r),
+        thickness=Distribution("spline",
+                               control_x=(0.12, 0.30, 0.50, 0.75, 0.95, 1.0),
+                               control_y=(0.24, 0.145, 0.095, 0.068, 0.052, 0.048)),
+        root_airfoil="clarky", tip_airfoil="naca16509", airfoil_blend_start=0.30,
+        chord_scale=chord_scale,
+    ))
+
+
+_ga_blade("Cessna 172 (McCauley 75x57)", 75.0, 57.0)
+_ga_blade("Cessna 172S (McCauley 76x63 cruise)", 76.0, 63.0)
+_ga_blade("Cessna 152 (McCauley 69x52)", 69.0, 52.0)
+_ga_blade("Cessna 182 (constant-speed 82 in)", 82.0, 65.0, hub_frac=0.14)
+_ga_blade("Piper Cub (Sensenich 74x42 climb)", 74.0, 42.0)
+_ga_blade("LSA 3-blade (68x44, geared)", 68.0, 44.0, blades=3, hub_frac=0.15)
+
+
+DEFAULT_PRESET = "Cessna 172 (McCauley 75x57)"
+
+#: The original model/drone presets, kept so the drone workflow is unchanged.
+DRONE_PRESETS = ("APC 10x5 (sport)", "APC 10x7 (fast)", "APC 9x4.5 (slow-fly)",
+                 "APC 13x6.5 (trainer)", "APC 6x4 (micro)", "Tri-blade 10x6",
+                 "UAV quad 15x5.5 (2-blade)", "Ideal-twist research prop",
+                 "Elliptical testbed", "Scale warbird 4-blade")
+
+#: The general-aviation presets added for aircraft work.
+AIRCRAFT_PRESETS = ("Cessna 172 (McCauley 75x57)", "Cessna 172S (McCauley 76x63 cruise)",
+                    "Cessna 152 (McCauley 69x52)", "Cessna 182 (constant-speed 82 in)",
+                    "Piper Cub (Sensenich 74x42 climb)", "LSA 3-blade (68x44, geared)")
+
+
+def list_presets(category: str = "all") -> list[str]:
+    """Preset names, optionally filtered to ``"aircraft"`` or ``"drone"``."""
+    if category == "aircraft":
+        return list(AIRCRAFT_PRESETS)
+    if category == "drone":
+        return list(DRONE_PRESETS)
+    return list(PROP_PRESETS)
 
 
 def get_preset(name: str) -> BladeGeometry:
@@ -424,11 +490,8 @@ def get_preset(name: str) -> BladeGeometry:
     return replace(PROP_PRESETS[name])
 
 
-def list_presets() -> list[str]:
-    return list(PROP_PRESETS)
-
-
 __all__ = [
     "Distribution", "BladeGeometry", "BladeStations", "constant_pitch_twist",
-    "PROP_PRESETS", "DEFAULT_PRESET", "get_preset", "list_presets", "DEG",
+    "PROP_PRESETS", "DEFAULT_PRESET", "DRONE_PRESETS", "AIRCRAFT_PRESETS",
+    "get_preset", "list_presets", "DEG",
 ]

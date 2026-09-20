@@ -216,6 +216,17 @@ class AirfoilPolar:
             name=self.name,
         )
 
+    def max_lift(self) -> float:
+        """Maximum |Cl| in the attached-flow range.
+
+        Needed by the compressibility correction: Prandtl-Glauert amplifies the
+        lift *slope*, but maximum lift falls with Mach rather than rising, so
+        the amplified value has to be bounded by something.
+        """
+        a = np.linspace(-25.0 * DEG, 25.0 * DEG, 401)
+        cl, _ = self.base_polar(a)
+        return float(np.max(np.abs(cl)))
+
     def summary(self) -> dict[str, float]:
         """Headline numbers: alpha_0, Cl_alpha, Cl_max, Cd_min, best L/D."""
         a = np.linspace(-20.0 * DEG, 25.0 * DEG, 901)
@@ -253,6 +264,9 @@ class AnalyticPolar(AirfoilPolar):
     cd_k: float = 0.012              # parabolic drag polar: cd = cd_min + k (cl - cl_cdmin)^2
     cl_cdmin: float = 0.15
     stall_width: float = 4.0 * DEG   # blend width around stall
+
+    def max_lift(self) -> float:
+        return float(max(abs(self.cl_max), abs(self.cl_min)))
 
     def base_polar(self, alpha: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         a = np.asarray(alpha, dtype=float)

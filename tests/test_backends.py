@@ -45,14 +45,14 @@ def test_device_math_reproduces_the_numpy_solver(stations, tables, options,
                                                         air=sea_level),
                                options, tables)
     a0, da, n_alpha, cl_flat, cd_flat = _flat(tables)
-    thickness, re_ref, m_crit0 = stations.section_params()
+    thickness, re_ref, m_crit0, cl_max = stations.section_params()
     omega = rpm_to_rad_s(8000.0)
 
     worst = 0.0
     for i in range(stations.n):
         phi, bracketed = solve_phi(
             stations.twist[i], stations.r[i], stations.chord[i], stations.solidity[i],
-            thickness[i], re_ref[i], m_crit0[i], i * n_alpha, n_alpha, a0, da,
+            thickness[i], re_ref[i], m_crit0[i], cl_max[i], i * n_alpha, n_alpha, a0, da,
             cl_flat, cd_flat, omega * stations.r[i], 6.0, sea_level.density,
             sea_level.viscosity, sea_level.sound_speed, prop.radius, prop.hub_radius,
             prop.n_blades, options.flags(), options.n_bisect, PHI_LO, PHI_HI)
@@ -64,19 +64,19 @@ def test_device_math_reproduces_the_numpy_solver(stations, tables, options,
 def test_element_state_residual_is_zero_at_the_solution(stations, tables, options,
                                                         sea_level, prop):
     a0, da, n_alpha, cl_flat, cd_flat = _flat(tables)
-    thickness, re_ref, m_crit0 = stations.section_params()
+    thickness, re_ref, m_crit0, cl_max = stations.section_params()
     omega = rpm_to_rad_s(7000.0)
     i = stations.n // 2
 
     phi, _ = solve_phi(
         stations.twist[i], stations.r[i], stations.chord[i], stations.solidity[i],
-        thickness[i], re_ref[i], m_crit0[i], i * n_alpha, n_alpha, a0, da,
+        thickness[i], re_ref[i], m_crit0[i], cl_max[i], i * n_alpha, n_alpha, a0, da,
         cl_flat, cd_flat, omega * stations.r[i], 0.0, sea_level.density,
         sea_level.viscosity, sea_level.sound_speed, prop.radius, prop.hub_radius,
         prop.n_blades, options.flags(), options.n_bisect, PHI_LO, PHI_HI)
     residual = element_state(
         phi, stations.twist[i], stations.r[i], stations.chord[i], stations.solidity[i],
-        thickness[i], re_ref[i], m_crit0[i], i * n_alpha, n_alpha, a0, da,
+        thickness[i], re_ref[i], m_crit0[i], cl_max[i], i * n_alpha, n_alpha, a0, da,
         cl_flat, cd_flat, omega * stations.r[i], 0.0, sea_level.density,
         sea_level.viscosity, sea_level.sound_speed, prop.radius, prop.hub_radius,
         prop.n_blades, options.flags())[0]
@@ -169,7 +169,7 @@ CUDASIM_SCRIPT = textwrap.dedent("""
     st = g.discretize(6)
     opts = SolverOptions(n_bisect=14)
     ag, cl_t, cd_t = st.polar_tables()
-    th, rr, mc = st.section_params()
+    th, rr, mc, cm = st.section_params()
     na = cl_t.shape[1]
     cl_f = np.ascontiguousarray(cl_t).ravel()
     cd_f = np.ascontiguousarray(cd_t).ravel()
@@ -183,7 +183,7 @@ CUDASIM_SCRIPT = textwrap.dedent("""
     span = [np.zeros(nc * ns) for _ in range(8)]
     blocks, threads = cuda_launch_config(nc, NT)
     kern[blocks, threads](
-        st.r, st.chord, st.twist, st.solidity, th, rr, mc, st.dr, cl_f, cd_f,
+        st.r, st.chord, st.twist, st.solidity, th, rr, mc, cm, st.dr, cl_f, cd_f,
         rpm * 2 * math.pi / 60, v, T, Q, C, *span, na, float(ag[0]),
         float(ag[1] - ag[0]), A.density, A.viscosity, A.sound_speed,
         g.radius, g.hub_radius, g.n_blades, opts.flags(), opts.n_bisect,
@@ -257,3 +257,63 @@ def test_torch_path_matches_the_reference_on_cpu(stations, tables, options, sea_
         scale = max(float(np.abs(np.asarray(ref[key])).max()), 1e-12)
         assert np.abs(out[key] - np.asarray(ref[key])).max() / scale < 1e-12, key
     assert np.abs(out["phi"] - np.asarray(ref["phi"])).max() < 1e-12
+
+
+# ---------------------------------------------------------------------------
+# OpenCL -- the CUDA-free GPU path
+# ---------------------------------------------------------------------------
+
+def test_one_source_renders_both_cuda_and_opencl():
+    """The two kernels must stay the same code, or they will silently diverge."""
+    from propwash.accel.kernels_raw import PW_THREADS, kernel_source
+
+    cuda = kernel_source("cuda")
+    opencl = kernel_source("opencl")
+
+    assert 'extern "C" __global__ void bemt_solve' in cuda
+    assert "__syncthreads()" in cuda and "__shared__" in cuda
+    assert "__kernel void bemt_solve" in opencl
+    assert "barrier(CLK_LOCAL_MEM_FENCE)" in opencl and "__local" in opencl
+    assert "cl_khr_fp64" in opencl, "double precision must be requested explicitly"
+
+    for src in (cuda, opencl):
+        assert "{PW_" not in src and "{THREADS" not in src, "unsubstituted token"
+        for fn in ("pw_prandtl", "pw_interp", "pw_corrections", "pw_element",
+                   "pw_mach_cl_ceiling"):
+            assert fn in src
+        assert f"#define PW_THREADS  {PW_THREADS}" in src
+
+    with pytest.raises(KeyError):
+        kernel_source("vulkan")
+
+
+def test_opencl_work_group_size_is_a_power_of_two():
+    """The tree reduction halves the stride, so anything else loses elements."""
+    pytest.importorskip("pyopencl")
+    from propwash.accel.opencl import available_devices, build
+
+    if not available_devices():
+        pytest.skip("no OpenCL platform on this machine")
+    _, _, _, threads = build()
+    assert threads >= 1
+    assert threads & (threads - 1) == 0, f"{threads} is not a power of two"
+
+
+def test_opencl_executes_and_matches_the_reference(stations, tables, options,
+                                                   sea_level):
+    """Not just compiled -- run, on whatever device OpenCL can find."""
+    pytest.importorskip("pyopencl")
+    from propwash.accel.opencl import available_devices, solve_batch_opencl
+
+    if not available_devices():
+        pytest.skip("no OpenCL platform on this machine")
+
+    rpm = np.linspace(2000.0, 12000.0, 32)
+    v = np.linspace(0.0, 25.0, 32)
+    ref = solve_batch(stations, rpm, v, sea_level, options, tables)
+    out = solve_batch_opencl(stations, rpm, v, sea_level, options, tables, True)
+
+    scale = float(np.abs(np.asarray(ref["thrust"])).max())
+    assert np.abs(out["thrust"] - np.asarray(ref["thrust"])).max() / scale < 1e-12
+    assert np.abs(out["phi"] - np.asarray(ref["phi"])).max() < 1e-12
+    assert np.allclose(out["converged"], 1.0)
