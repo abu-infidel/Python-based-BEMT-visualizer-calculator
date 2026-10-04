@@ -59,23 +59,25 @@ def _interp(torch, alpha, alpha0, d_alpha, cl_tab, cd_tab):
 
 
 def _corrections(torch, cl, cd, w, chord, rho, mu, a_sound, thickness, re_ref,
-                 m_crit0, cl_max, flags):
+                 kappa, cl_max, flags):
+    """Full-size corrections; the NumPy twin in core.py documents each term."""
+    re_cl = torch.ones_like(cl)
     if flags & FLAG_REYNOLDS:
-        re = torch.clamp(rho * w * chord / mu, min=1e3)
-        ratio = re_ref / re
-        scale = torch.clamp(ratio ** 0.2 * (1.0 + 0.45 * torch.clamp(2e4 / re - 1.0, min=0.0)),
-                            0.5, 4.0)
-        cd = cd * scale
-        cl = cl * torch.clamp(1.0 - 0.14 * torch.log10(ratio), 0.45, 1.12)
+        re = torch.clamp(rho * w * chord / mu, min=1e4)
+        cd = cd * torch.clamp((re_ref / re) ** 0.2, 0.75, 1.6)
+        re_cl = torch.clamp(1.0 + 0.06 * torch.log10(re / re_ref), 0.85, 1.05)
     if flags & FLAG_MACH:
-        m = torch.clamp(w / a_sound, 0.0, 0.92)
-        cl = cl / torch.sqrt(torch.clamp(1.0 - m * m, min=1e-3))
-        # Compressibility raises the lift slope but lowers the stall ceiling.
-        ceiling = cl_max * torch.clamp(
-            1.0 - 0.9 * torch.clamp(m - 0.35, min=0.0) ** 1.5, min=0.35)
-        cl = torch.clamp(cl, -ceiling, ceiling)
-        m_dd = m_crit0 - 0.1 * torch.abs(cl) - thickness
-        cd = cd + 20.0 * torch.clamp(m - m_dd, min=0.0) ** 4
+        m = torch.clamp(w / a_sound, min=0.0)
+        m_pg = torch.clamp(m, max=0.92)
+        cl = cl / torch.sqrt(torch.clamp(1.0 - m_pg * m_pg, min=1e-3))
+        ceiling = cl_max * re_cl * torch.clamp(
+            1.0 - 0.9 * torch.clamp(m_pg - 0.35, min=0.0) ** 1.5, min=0.35)
+        cl = torch.maximum(torch.minimum(cl, ceiling), -ceiling)
+        m_cr = kappa - 0.1 * torch.abs(cl) - thickness - 0.1077
+        cd = cd + 20.0 * torch.clamp(torch.clamp(m, max=1.2) - m_cr, min=0.0) ** 4
+    else:
+        ceiling = cl_max * re_cl
+        cl = torch.maximum(torch.minimum(cl, ceiling), -ceiling)
     return cl, torch.clamp(cd, min=1e-5)
 
 
@@ -90,7 +92,7 @@ def _state(torch, phi, g):
     w = torch.clamp(torch.abs(4.0 * f * g["omega_r"] * sp / den),
                     min=1e-3).maximum(g["v_inf"].abs())
     cl, cd = _corrections(torch, cl0, cd0, w, g["chord"], g["rho"], g["mu"],
-                          g["a_sound"], g["thickness"], g["re_ref"], g["m_crit0"],
+                          g["a_sound"], g["thickness"], g["re_ref"], g["kappa"],
                           g["cl_max"], g["flags"])
     cn = cl * cp - cd * sp
     ct = cl * sp + cd * cp
@@ -108,7 +110,7 @@ def solve_batch_torch(stations: BladeStations, rpm: np.ndarray, v_inf: np.ndarra
     td = torch.float32 if (dtype == "float32" or dev.type == "mps") else torch.float64
 
     alpha_grid, cl_tab, cd_tab = tables
-    thickness, re_ref, m_crit0, cl_max = stations.section_params()
+    thickness, re_ref, kappa, cl_max = stations.section_params()
     geom = stations.geometry
 
     def row(a):
@@ -120,7 +122,7 @@ def solve_batch_torch(stations: BladeStations, rpm: np.ndarray, v_inf: np.ndarra
     g: dict[str, Any] = {
         "r": row(stations.r), "chord": row(stations.chord), "twist": row(stations.twist),
         "sigma": row(stations.solidity), "thickness": row(thickness),
-        "re_ref": row(re_ref), "m_crit0": row(m_crit0), "cl_max": row(cl_max),
+        "re_ref": row(re_ref), "kappa": row(kappa), "cl_max": row(cl_max),
         "cl_tab": torch.as_tensor(np.ascontiguousarray(cl_tab), dtype=td, device=dev),
         "cd_tab": torch.as_tensor(np.ascontiguousarray(cd_tab), dtype=td, device=dev),
         "alpha0": float(alpha_grid[0]), "d_alpha": float(alpha_grid[1] - alpha_grid[0]),

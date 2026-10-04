@@ -65,53 +65,79 @@ nothing here fails because a GPU is absent.
 
 ---
 
-## Step 4 — the capacity test
-
-This is the short version of what the whole project is for:
+## Step 4 — the calculator
 
 ```python
-from propwash.accel.bench import benchmark
-print(benchmark(n_cases=65536, n_elements=64, verbose=False).format())
+app = pc.launch()
 ```
 
-Every available backend solves the same grid and is diffed against the NumPy
-reference, so correctness is printed next to speed — a GPU path that is a
-hundred times faster and half a percent wrong is a bug, not a win.
+Every field starts **empty**; nothing is assumed for you. Fill in the form,
+which has these groups:
 
-To find the actual ceiling, walk it up until something breaks:
+- **Calculation:** `analysis` (evaluate a propeller you describe) or `sizing`
+  (design one for a cruise point).
+- **Flight condition:** pressure altitude, ISA temperature deviation, true
+  airspeed (0 for static).
+- **Engine:** rated power, rated RPM (also the RPM limit), gear ratio,
+  aspiration, and the critical altitude if turbocharged. BSFC is optional;
+  without it, fuel flow is reported as not available.
+- **Propeller:** diameter, blades, activity factor, spinner diameter, planform,
+  root/tip sections and thickness, and pitch type. Fixed pitch needs its pitch,
+  for example the 57 in "75×57". Constant speed needs its fine and coarse
+  blade-angle stops at 0.75 R.
+- **Power setting:** `full_throttle`, `set_rpm` (fixed pitch) or `set_power`.
+- **Airframe (optional):** weight, wing area, span, CD0, Oswald *e* and CLmax.
+  It adds drag, level-flight trim, top speed, best climb and ceilings.
 
-```python
-for n in (2**14, 2**16, 2**18, 2**20):
-    print(benchmark(n_cases=n, n_elements=64, verbose=False).format(), "\n")
-```
+Fields marked **\*** are required by the choices you have made, and the marks
+update as you change them. Every box accepts any number: there are no slider
+limits. A value outside the usual full-size range gives a warning in the
+results, not a refusal.
 
-Spanwise memory is `n_cases × n_elements × 8 bytes` **per field**, so 2²⁰ cases
-at 64 elements asks for ~0.5 GB each. The out-of-memory error from CuPy or
-Numba is the limit you were looking for. To push case count without the memory,
-pass `want_spanwise=False` through the backend directly — only thrust and
-torque come back, and the per-case cost collapses.
+Press **Calculate**. The status box lists every problem (missing or invalid
+fields, an RPM limit reached, power not available at that altitude, and so on),
+and the tabs show the results, the spinning 3-D propeller coloured by thrust
+loading, performance against airspeed, the blade state, and the report text.
 
----
-
-## Step 5 — the GUI
-
-```python
-lab = pc.launch()
-```
-
-Controls on the left, tabs on the right. Worth touching first:
-
-- **Flight condition → Motor-matched** is on by default, which makes *Shaft
-  speed* read-only: it shows where the propeller actually settles, at the RPM
-  where its torque demand meets the motor's torque supply.
-- **Propeller → Collective** is the instructive slider. Add pitch and thrust
-  rises while RPM comes *down* and current climbs.
-- **View → Colour by** maps any solver field onto the blade.
-- **View → Spin** animates at a rate proportional to the solved RPM.
+Press **Export .txt** to save the results as a structured report. On Colab the
+browser downloads it; in Jupyter you get a link. The format is specified in
+[`docs/report-format/README.md`](report-format/README.md), so another program
+or an LLM can read it. **Save inputs .json** and **Load .json** keep and
+reopen a filled-in form.
 
 Or open `notebooks/Propwash_Propeller_Lab.ipynb` straight from GitHub:
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/abu-infidel/Python-based-BEMT-visualizer-calculator/blob/main/notebooks/Propwash_Propeller_Lab.ipynb)
+
+---
+
+## Step 5 — the capacity test (optional)
+
+This measures how fast the host's compute backends solve propeller grids. It
+uses the Cessna 172N reference propeller from the validation case:
+
+```python
+!python -m propwash bench --cases 65536
+```
+
+Every available backend solves the same grid and is diffed against the NumPy
+reference, so correctness is printed next to speed. A GPU path that is a
+hundred times faster but half a percent wrong is a bug, not a win.
+
+From Python, with a propeller of your own:
+
+```python
+from propwash.accel.bench import benchmark
+from propwash.analysis import build_geometry
+from propwash.atmosphere import isa
+from propwash.case import parse_case
+geom, _ = build_geometry(parse_case(my_case))       # my_case: a filled-in case dict
+print(benchmark(geom, isa(0.0), n_cases=2**18, verbose=False).format())
+```
+
+Spanwise memory is `n_cases × n_elements × 8 bytes` **per field**, so 2²⁰ cases
+at 64 elements asks for ~0.5 GB each. The out-of-memory error from CuPy or
+Numba is the limit you were looking for.
 
 ---
 
@@ -246,7 +272,10 @@ git clone https://github.com/abu-infidel/Python-based-BEMT-visualizer-calculator
 cd Python-based-BEMT-visualizer-calculator
 pip install -e ".[notebook]"
 
-python -m propwash env                  # what can this machine do?
-python -m propwash bench --cases 65536  # benchmark and cross-validate
-python -m propwash cuda-check           # compile the CUDA C via NVRTC, no GPU needed
+python -m propwash template -o case.json        # a blank case file: fill it in
+python -m propwash run case.json -o report.txt  # calculate, write the structured report
+python -m propwash validate                     # model vs published Cessna 172N data
+python -m propwash env                          # what can this machine do?
+python -m propwash bench --cases 65536          # benchmark and cross-validate
+python -m propwash cuda-check                   # compile the CUDA C via NVRTC, no GPU needed
 ```

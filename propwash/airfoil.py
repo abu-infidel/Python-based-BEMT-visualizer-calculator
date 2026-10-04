@@ -1,4 +1,4 @@
-"""Section aerodynamics: lift/drag polars over the full +/-180 deg range.
+"""Section aerodynamics for full-size propellers: polars over the full +/-180 deg.
 
 A BEMT solver spends essentially all of its time asking "what are Cl and Cd at
 this angle of attack, Reynolds number and Mach number?".  Three things matter:
@@ -7,16 +7,26 @@ this angle of attack, Reynolds number and Mach number?".  Three things matter:
     solver probes angles no real propeller ever sees, and a polar that returns
     garbage outside +/-15 deg will wreck convergence.  Hence Viterna-Corrigan
     extrapolation to the full circle.
-2.  It must be cheap, and evaluable inside a CUDA kernel.  Hence
+2.  It must be cheap, and evaluable inside a GPU kernel.  Hence
     :meth:`AirfoilPolar.tabulate`, which bakes a polar down to a uniform alpha
     grid that device code can interpolate with two multiplies and an add.
-3.  Reynolds and Mach corrections have to be applied *on top* of the table,
-    because a propeller blade spans a factor of ~5 in Reynolds number and the
-    tip can be transonic while the root is incompressible.
+3.  Reynolds, thickness and Mach effects have to be right *for full-size
+    propellers*: blade Reynolds numbers of 1-10 million, sections from 30%
+    thick at the shank to 5% at the tip, and tips running at Mach 0.7-0.9.
 
-The bundled presets are parametrised models fitted to published section
-characteristics -- they are not digitised wind-tunnel data.  Use
-:func:`load_polar_file` if you have real XFOIL or AirfoilTools output.
+The library holds sections actually used on full-size propellers.  Each is a
+parametrised model whose numbers are fitted to published characteristics at a
+full-scale Reynolds number of 3 million -- they are not digitised wind-tunnel
+data.  Use :func:`load_polar_file` if you have real XFOIL or test output.
+
+Two thickness effects are applied per blade station, relative to the
+thickness the section's parameters were fitted at:
+
+* profile drag scales with Hoerner's form factor ``1 + 2 t + 60 t^4``, so the
+  thick shank makes more drag than the thin tip;
+* maximum lift falls steeply below about 12% thickness (thin sections stall at
+  the leading edge) and gently above 15% -- the shape of the classic maximum-
+  lift-versus-thickness curves for NACA sections.
 """
 
 from __future__ import annotations
@@ -38,87 +48,62 @@ TWO_PI = 2.0 * math.pi
 
 
 # ---------------------------------------------------------------------------
-# Compressibility and Reynolds corrections
+# Full-size corrections (host-side twins of the kernel code in bemt/core.py)
 # ---------------------------------------------------------------------------
 
-def prandtl_glauert(cl: ArrayLike, mach: ArrayLike, m_limit: float = 0.92) -> ArrayLike:
-    """Subsonic compressibility lift amplification, 1/sqrt(1 - M^2).
+#: Reference Reynolds number every library section is fitted at.
+FULL_SCALE_RE = 3.0e6
 
-    Clipped at ``m_limit`` so the correction stays finite through the transonic
-    region, where the linearised theory has no business being anyway.
-    """
+#: Lock's offset between critical and drag-divergence Mach, (0.1/80)^(1/3).
+LOCK_OFFSET = 0.1077
+
+
+def prandtl_glauert(cl: ArrayLike, mach: ArrayLike, m_limit: float = 0.92) -> ArrayLike:
+    """Subsonic compressibility lift amplification, 1/sqrt(1 - M^2)."""
     m = np.clip(np.abs(mach), 0.0, m_limit)
     return cl / np.sqrt(np.maximum(1.0 - m * m, 1.0e-3))
 
 
-def critical_mach(cl: ArrayLike, thickness: float, m_crit0: float = 0.78) -> ArrayLike:
-    """Korn-style critical Mach estimate falling off with lift and thickness."""
-    return m_crit0 - 0.1 * np.abs(cl) - 1.0 * thickness
+def critical_mach(cl: ArrayLike, thickness: ArrayLike, kappa: float) -> ArrayLike:
+    """Korn critical Mach: drag divergence ``kappa - t/c - Cl/10`` less Lock's offset."""
+    return kappa - 0.1 * np.abs(cl) - np.asarray(thickness, dtype=float) - LOCK_OFFSET
 
 
 def drag_divergence(mach: ArrayLike, m_crit: ArrayLike, k: float = 20.0) -> ArrayLike:
-    """Wave drag increment beyond the drag-divergence Mach number.
-
-    The classic Lock fourth-power rise: ``dCd = k (M - M_dd)^4``.  Small below
-    M_dd, brutal above it -- which is exactly why propeller tips are the part
-    that limits RPM.
-    """
-    dm = np.maximum(np.asarray(mach, dtype=float) - m_crit, 0.0)
+    """Lock's fourth-power wave drag above the critical Mach number."""
+    dm = np.maximum(np.minimum(np.asarray(mach, dtype=float), 1.2) - m_crit, 0.0)
     return k * dm ** 4
 
 
-def reynolds_drag_scale(re: ArrayLike, re_ref: float, exponent: float = 0.2,
-                        re_floor: float = 2.0e4) -> ArrayLike:
-    """Scale profile drag with Reynolds number.
+def reynolds_drag_scale(re: ArrayLike, re_ref: float = FULL_SCALE_RE) -> ArrayLike:
+    """Turbulent skin-friction scaling Re^-0.2, bounded to the full-size range."""
+    r = np.maximum(np.asarray(re, dtype=float), 1.0e4)
+    return np.clip((re_ref / r) ** 0.2, 0.75, 1.6)
 
-    Turbulent skin friction goes as Re^-0.2.  Below ``re_floor`` the boundary
-    layer is laminar and separation-prone, so drag is inflated further -- the
-    reason small propellers are so much less efficient than big ones.
+
+def reynolds_lift_ceiling(re: ArrayLike, re_ref: float = FULL_SCALE_RE) -> ArrayLike:
+    """Maximum-lift scaling with Reynolds number: a few percent per decade."""
+    r = np.maximum(np.asarray(re, dtype=float), 1.0e4)
+    return np.clip(1.0 + 0.06 * np.log10(r / re_ref), 0.85, 1.05)
+
+
+def thickness_drag_factor(t: ArrayLike) -> ArrayLike:
+    """Hoerner's profile-drag form factor ``1 + 2 t + 60 t^4``."""
+    tt = np.clip(np.asarray(t, dtype=float), 0.0, 0.5)
+    return 1.0 + 2.0 * tt + 60.0 * tt ** 4
+
+
+def thickness_lift_factor(t: ArrayLike) -> ArrayLike:
+    """Relative maximum lift against thickness ratio.
+
+    Flat between 12% and 15%; falls as ``(t/0.12)^0.85`` below (a 6% section
+    reaches roughly 55% of the maximum lift of a 12% one) and by 1.5 per unit
+    thickness above.  A fit to the trend in NACA section data, not a law.
     """
-    r = np.maximum(np.asarray(re, dtype=float), 1.0e3)
-    scale = (re_ref / r) ** exponent
-    low = np.maximum(re_floor / r, 1.0)
-    # The two factors compound, and at the near-stalled root of a small
-    # propeller Re can fall to a few thousand.  Cap the product: measured
-    # low-Re polars show profile drag rising by roughly 3-4x, not 10x.
-    return np.clip(scale * (1.0 + 0.45 * (low - 1.0)), 0.5, 4.0)
-
-
-def reynolds_clmax_scale(re: ArrayLike, re_ref: float) -> ArrayLike:
-    """Maximum lift degradation at low Reynolds number."""
-    r = np.maximum(np.asarray(re, dtype=float), 1.0e3)
-    return np.clip(1.0 - 0.14 * np.log10(re_ref / r), 0.45, 1.12)
-
-
-def du_selig_stall_delay(cl_2d: ArrayLike, cd_2d: ArrayLike, alpha: ArrayLike,
-                         cl_alpha: float, cl0: float, cd0: float,
-                         chord_over_r: ArrayLike, tsr_local: ArrayLike,
-                         a_coef: float = 1.0, b_coef: float = 1.0,
-                         d_coef: float = 1.0) -> tuple[np.ndarray, np.ndarray]:
-    """Du-Selig / Eggers rotational augmentation ("centrifugal pumping").
-
-    Rotation throws separated boundary-layer fluid outboard, which delays stall
-    near the root and can lift inboard Cl well above its 2-D value.  Ignoring it
-    under-predicts static thrust noticeably.
-    """
-    c_r = np.clip(np.asarray(chord_over_r, dtype=float), 1e-4, 2.0)
-    lam = np.sqrt(1.0 + np.asarray(tsr_local, dtype=float) ** 2)
-    expo = d_coef / (lam * c_r)
-    f_l = (1.0 / TWO_PI) * (
-        (1.6 * c_r / 0.1267) * (a_coef - c_r ** expo) / (b_coef + c_r ** expo) - 1.0
-    )
-    f_d = (1.0 / TWO_PI) * (
-        (1.6 * c_r / 0.1267) * (a_coef - c_r ** (expo / 2.0)) / (b_coef + c_r ** (expo / 2.0)) - 1.0
-    )
-    f_l = np.clip(f_l, 0.0, 1.0)
-    f_d = np.clip(f_d, 0.0, 1.0)
-
-    cl_pot = cl0 + cl_alpha * np.asarray(alpha, dtype=float)
-    cl_rot = cl_2d + f_l * (cl_pot - cl_2d)
-    # Eggers: the same mechanism that raises lift also recovers some of the
-    # separation drag, referenced to the attached-flow value ``cd0``.
-    cd_rot = cd_2d - f_d * (np.asarray(cd_2d, dtype=float) - cd0)
-    return cl_rot, np.maximum(cd_rot, 1e-4)
+    tt = np.clip(np.asarray(t, dtype=float), 0.02, 0.45)
+    thin = (tt / 0.12) ** 0.85
+    thick = np.maximum(1.0 - 1.5 * (tt - 0.15), 0.5)
+    return np.where(tt < 0.12, thin, np.where(tt <= 0.15, 1.0, thick))
 
 
 # ---------------------------------------------------------------------------
@@ -168,10 +153,10 @@ class AirfoilPolar:
     """Base class: a section's Cl/Cd behaviour over the full circle."""
 
     name: str = "generic"
-    thickness: float = 0.12          # t/c, used for the Mach corrections
-    re_ref: float = 5.0e5            # Reynolds number the base polar describes
-    aspect_ratio: float = 12.0       # for the Viterna Cd_max estimate
-    m_crit0: float = 0.78
+    thickness: float = 0.12          # t/c at this station
+    re_ref: float = FULL_SCALE_RE    # Reynolds number the base polar describes
+    aspect_ratio: float = 8.0        # blade aspect ratio, for Viterna Cd_max
+    kappa: float = 0.87              # Korn technology factor
 
     def base_polar(self, alpha: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Incompressible Cl, Cd at ``re_ref`` for alpha in radians."""
@@ -188,17 +173,24 @@ class AirfoilPolar:
     def apply_corrections(self, cl: np.ndarray, cd: np.ndarray,
                           reynolds: ArrayLike | None,
                           mach: ArrayLike | None) -> tuple[np.ndarray, np.ndarray]:
+        """Host-side version of the solver's corrections, for plotting a polar."""
         cl = np.asarray(cl, dtype=float)
         cd = np.asarray(cd, dtype=float)
+        ceiling = np.full_like(cl, self.max_lift())
 
         if reynolds is not None:
             cd = cd * reynolds_drag_scale(reynolds, self.re_ref)
-            cl = cl * reynolds_clmax_scale(reynolds, self.re_ref)
+            ceiling = ceiling * reynolds_lift_ceiling(reynolds, self.re_ref)
 
         if mach is not None:
-            cl = prandtl_glauert(cl, mach)
-            m_dd = critical_mach(cl, self.thickness, self.m_crit0)
-            cd = cd + drag_divergence(mach, m_dd)
+            m = np.maximum(np.asarray(mach, dtype=float), 0.0)
+            cl = prandtl_glauert(cl, m)
+            excess = np.maximum(np.minimum(m, 0.92) - 0.35, 0.0)
+            ceiling = ceiling * np.maximum(1.0 - 0.9 * excess ** 1.5, 0.35)
+            cl = np.clip(cl, -ceiling, ceiling)
+            cd = cd + drag_divergence(m, critical_mach(cl, self.thickness, self.kappa))
+        else:
+            cl = np.clip(cl, -ceiling, ceiling)
 
         return cl, np.maximum(cd, 1e-5)
 
@@ -212,7 +204,7 @@ class AirfoilPolar:
             cd=np.ascontiguousarray(cd, dtype=np.float64),
             thickness=self.thickness,
             re_ref=self.re_ref,
-            m_crit0=self.m_crit0,
+            kappa=self.kappa,
             name=self.name,
         )
 
@@ -253,39 +245,60 @@ class AnalyticPolar(AirfoilPolar):
 
     The pre-stall parameters are the ones people actually quote for a section:
     zero-lift angle, lift-curve slope, maximum lift, minimum drag and the
-    parabolic drag-polar coefficient.
+    parabolic drag-polar coefficient -- all at ``nominal_thickness``.  The
+    station's own ``thickness`` then scales drag and maximum lift.
     """
 
     alpha_0: float = 0.0             # rad, zero-lift angle
-    cl_alpha: float = 2.0 * math.pi * 0.95
-    cl_max: float = 1.35
-    cl_min: float = -1.05
-    cd_min: float = 0.0085
-    cd_k: float = 0.012              # parabolic drag polar: cd = cd_min + k (cl - cl_cdmin)^2
-    cl_cdmin: float = 0.15
+    cl_alpha: float = 2.0 * math.pi * 0.97
+    cl_max: float = 1.5
+    cl_min: float = -1.2
+    cd_min: float = 0.0070
+    cd_k: float = 0.010              # parabolic drag polar: cd = cd_min + k (cl - cl_cdmin)^2
+    cl_cdmin: float = 0.3
     stall_width: float = 4.0 * DEG   # blend width around stall
+    nominal_thickness: float = 0.12  # t/c the parameters above describe
+
+    # -- thickness-adjusted parameters --------------------------------------
+    def _lift_scale(self) -> float:
+        return float(thickness_lift_factor(self.thickness)
+                     / thickness_lift_factor(self.nominal_thickness))
+
+    def effective_cl_max(self) -> float:
+        return self.cl_max * self._lift_scale()
+
+    def effective_cl_min(self) -> float:
+        return self.cl_min * self._lift_scale()
+
+    def effective_cd_min(self) -> float:
+        return float(self.cd_min * thickness_drag_factor(self.thickness)
+                     / thickness_drag_factor(self.nominal_thickness))
 
     def max_lift(self) -> float:
-        return float(max(abs(self.cl_max), abs(self.cl_min)))
+        return float(max(abs(self.effective_cl_max()), abs(self.effective_cl_min())))
 
     def base_polar(self, alpha: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         a = np.asarray(alpha, dtype=float)
         a_wrapped = wrap_angle(a)
 
+        cl_max = self.effective_cl_max()
+        cl_min = self.effective_cl_min()
+        cd_min = self.effective_cd_min()
+
         # --- attached flow -------------------------------------------------
         cl_lin = self.cl_alpha * (a_wrapped - self.alpha_0)
-        cd_lin = self.cd_min + self.cd_k * (cl_lin - self.cl_cdmin) ** 2
+        cd_lin = cd_min + self.cd_k * (cl_lin - self.cl_cdmin) ** 2
 
-        a_stall_p = self.alpha_0 + self.cl_max / self.cl_alpha
-        a_stall_n = self.alpha_0 + self.cl_min / self.cl_alpha
+        a_stall_p = self.alpha_0 + cl_max / self.cl_alpha
+        a_stall_n = self.alpha_0 + cl_min / self.cl_alpha
 
-        cd_stall_p = self.cd_min + self.cd_k * (self.cl_max - self.cl_cdmin) ** 2 + 0.02
-        cd_stall_n = self.cd_min + self.cd_k * (self.cl_min - self.cl_cdmin) ** 2 + 0.02
+        cd_stall_p = cd_min + self.cd_k * (cl_max - self.cl_cdmin) ** 2 + 0.02
+        cd_stall_n = cd_min + self.cd_k * (cl_min - self.cl_cdmin) ** 2 + 0.02
 
         # --- deep stall, both signs ----------------------------------------
-        cl_p, cd_p = viterna_extrapolate(a_stall_p, self.cl_max, cd_stall_p,
+        cl_p, cd_p = viterna_extrapolate(a_stall_p, cl_max, cd_stall_p,
                                          self.aspect_ratio, a_wrapped)
-        cl_n, cd_n = viterna_extrapolate(abs(a_stall_n), abs(self.cl_min), cd_stall_n,
+        cl_n, cd_n = viterna_extrapolate(abs(a_stall_n), abs(cl_min), cd_stall_n,
                                          self.aspect_ratio, -a_wrapped)
         cl_n, cd_n = -cl_n, cd_n
 
@@ -303,7 +316,7 @@ class AnalyticPolar(AirfoilPolar):
         deep = np.abs(a_wrapped) > math.pi / 2.0
         if np.any(deep):
             mirror = np.sign(a_wrapped) * math.pi - a_wrapped
-            cl_m, cd_m = viterna_extrapolate(a_stall_p, self.cl_max, cd_stall_p,
+            cl_m, cd_m = viterna_extrapolate(a_stall_p, cl_max, cd_stall_p,
                                              self.aspect_ratio, np.abs(mirror))
             taper = np.clip(np.abs(mirror) / max(a_stall_p, 1e-3), 0.0, 1.0)
             cl = np.where(deep, -0.7 * np.sign(a_wrapped) * cl_m * taper, cl)
@@ -375,7 +388,7 @@ class PolarTable:
     cd: np.ndarray
     thickness: float = 0.12
     re_ref: float = 5.0e5
-    m_crit0: float = 0.78
+    kappa: float = 0.78
     name: str = "tabulated"
 
     @property
@@ -422,53 +435,62 @@ def _blend_weight(alpha: np.ndarray, a_neg: float, a_pos: float, width: float) -
 
 
 # ---------------------------------------------------------------------------
-# Preset library
+# Full-size propeller section library
 # ---------------------------------------------------------------------------
 
-def _preset(name: str, **kw) -> AnalyticPolar:
-    return AnalyticPolar(name=name, **kw)
+def _section(name: str, t_nom: float, alpha0_deg: float, cl_alpha: float,
+             cl_max: float, cl_min: float, cd_min: float, cd_k: float,
+             cl_cdmin: float, kappa: float) -> AnalyticPolar:
+    return AnalyticPolar(name=name, thickness=t_nom, nominal_thickness=t_nom,
+                         re_ref=FULL_SCALE_RE, alpha_0=alpha0_deg * DEG,
+                         cl_alpha=cl_alpha, cl_max=cl_max, cl_min=cl_min,
+                         cd_min=cd_min, cd_k=cd_k, cl_cdmin=cl_cdmin, kappa=kappa)
 
 
+#: Sections used on full-size propellers, fitted at Re = 3 million.
+#: ``kappa`` is Korn's technology factor: higher means a later drag rise.
 AIRFOIL_LIBRARY: dict[str, AnalyticPolar] = {
-    "naca0012": _preset(
-        "NACA 0012", thickness=0.12, alpha_0=0.0, cl_alpha=6.05, cl_max=1.35,
-        cl_min=-1.35, cd_min=0.0080, cd_k=0.0115, cl_cdmin=0.0, re_ref=5e5),
-    "naca2412": _preset(
-        "NACA 2412", thickness=0.12, alpha_0=-2.1 * DEG, cl_alpha=6.10, cl_max=1.52,
-        cl_min=-1.05, cd_min=0.0075, cd_k=0.0100, cl_cdmin=0.25, re_ref=5e5),
-    "naca4412": _preset(
-        "NACA 4412", thickness=0.12, alpha_0=-4.2 * DEG, cl_alpha=6.15, cl_max=1.62,
-        cl_min=-0.90, cd_min=0.0080, cd_k=0.0095, cl_cdmin=0.45, re_ref=5e5),
-    "clarky": _preset(
-        "Clark Y", thickness=0.117, alpha_0=-3.6 * DEG, cl_alpha=6.05, cl_max=1.47,
-        cl_min=-0.95, cd_min=0.0085, cd_k=0.0105, cl_cdmin=0.38, re_ref=5e5),
-    "e63": _preset(
-        "Eppler 63", thickness=0.058, alpha_0=-5.8 * DEG, cl_alpha=6.20, cl_max=1.42,
-        cl_min=-0.62, cd_min=0.0150, cd_k=0.0160, cl_cdmin=0.70, re_ref=1e5,
-        m_crit0=0.82),
-    "mh117": _preset(
-        "MH 117", thickness=0.093, alpha_0=-3.0 * DEG, cl_alpha=6.10, cl_max=1.38,
-        cl_min=-0.85, cd_min=0.0095, cd_k=0.0110, cl_cdmin=0.35, re_ref=2e5),
-    "arad20": _preset(
-        "ARA-D 20%", thickness=0.20, alpha_0=-2.4 * DEG, cl_alpha=5.90, cl_max=1.30,
-        cl_min=-0.85, cd_min=0.0120, cd_k=0.0140, cl_cdmin=0.30, re_ref=1e6,
-        m_crit0=0.70),
-    "naca16509": _preset(
-        "NACA 16-509", thickness=0.09, alpha_0=-3.2 * DEG, cl_alpha=6.00, cl_max=1.10,
-        cl_min=-0.80, cd_min=0.0055, cd_k=0.0130, cl_cdmin=0.50, re_ref=1e6,
-        m_crit0=0.86),
-    "flatplate": _preset(
-        "Flat plate", thickness=0.02, alpha_0=0.0, cl_alpha=6.28, cl_max=0.85,
-        cl_min=-0.85, cd_min=0.0150, cd_k=0.0400, cl_cdmin=0.0, re_ref=1e5),
+    # The classic flat-bottomed general-aviation propeller section (NACA
+    # Report 640's full-scale propellers used it).  Propeller blade angles and
+    # pitch are measured off the flat face, which sits about 2 deg nose-down
+    # of the leading-to-trailing-edge chord, so the zero-lift angle here is
+    # referenced to the face: -4.2 deg, inside the published range (-3.6 deg
+    # chord-referenced to about -5.5 deg face-referenced) and the value that
+    # matches the Cessna 172N cruise data in docs/VALIDATION.md.
+    "clark_y": _section("Clark Y", 0.117, -4.2, 6.10, 1.55, -1.05,
+                        0.0080, 0.0095, 0.40, 0.84),
+    # The British counterpart, also tested full-scale in NACA Report 640.
+    "raf_6": _section("R.A.F. 6", 0.100, -3.5, 6.00, 1.45, -0.95,
+                      0.0085, 0.0100, 0.35, 0.83),
+    # NACA 16-series: designed for high critical Mach -- the usual choice for
+    # propeller tips that run near Mach 0.8.
+    "naca_16": _section("NACA 16-series", 0.090, -2.6, 6.20, 1.20, -0.95,
+                        0.0058, 0.0110, 0.40, 0.90),
+    # NACA 64-series laminar-flow section, common on constant-speed blades.
+    "naca_64": _section("NACA 64-series", 0.100, -2.8, 6.25, 1.45, -1.00,
+                        0.0055, 0.0105, 0.40, 0.88),
+    # ARA-D: the Aircraft Research Association's propeller family, used on
+    # modern composite blades.
+    "ara_d": _section("ARA-D", 0.100, -3.2, 6.20, 1.50, -0.95,
+                      0.0065, 0.0095, 0.45, 0.90),
+    # Symmetric reference section, mainly for checking the model.
+    "naca_0012": _section("NACA 0012", 0.120, 0.0, 6.30, 1.55, -1.55,
+                          0.0062, 0.0090, 0.0, 0.87),
 }
 
-DEFAULT_AIRFOIL = "clarky"
+
+def _key(name: str) -> str:
+    return _re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+_LOOKUP = {_key(k): k for k in AIRFOIL_LIBRARY}
+_LOOKUP.update({_key(v.name): k for k, v in AIRFOIL_LIBRARY.items()})
 
 
 def get_airfoil(name: str) -> AnalyticPolar:
-    """Look up a preset by a forgiving key ('NACA 4412' -> 'naca4412')."""
-    key = _re.sub(r"[^a-z0-9]", "", name.lower())
-    if key not in AIRFOIL_LIBRARY:
+    """Look up a section by a forgiving key ('Clark Y', 'clark_y', 'CLARKY')."""
+    key = _LOOKUP.get(_key(name))
+    if key is None:
         raise KeyError(f"unknown airfoil {name!r}; have {sorted(AIRFOIL_LIBRARY)}")
     return replace(AIRFOIL_LIBRARY[key])
 
@@ -486,9 +508,10 @@ def blended_polar(root: AirfoilPolar, tip: AirfoilPolar, fraction: float) -> Ana
     return AnalyticPolar(
         name=f"{root.name}->{tip.name} @{f:.2f}",
         thickness=mix(root.thickness, tip.thickness),
+        nominal_thickness=mix(root.nominal_thickness, tip.nominal_thickness),
         re_ref=mix(root.re_ref, tip.re_ref),
         aspect_ratio=mix(root.aspect_ratio, tip.aspect_ratio),
-        m_crit0=mix(root.m_crit0, tip.m_crit0),
+        kappa=mix(root.kappa, tip.kappa),
         alpha_0=mix(root.alpha_0, tip.alpha_0),
         cl_alpha=mix(root.cl_alpha, tip.cl_alpha),
         cl_max=mix(root.cl_max, tip.cl_max),
@@ -500,8 +523,14 @@ def blended_polar(root: AirfoilPolar, tip: AirfoilPolar, fraction: float) -> Ana
     )
 
 
-def load_polar_file(path: str | Path, name: str | None = None, **kw) -> TablePolar:
-    """Read an XFOIL ``.pol`` / AirfoilTools CSV with alpha, Cl, Cd columns."""
+def load_polar_file(path: str | Path, *, reynolds: float, thickness: float,
+                    name: str | None = None, **kw) -> TablePolar:
+    """Read an XFOIL ``.pol`` / AirfoilTools CSV with alpha, Cl, Cd columns.
+
+    ``reynolds`` and ``thickness`` are required: the solver's Reynolds and
+    compressibility corrections are applied *relative to* the conditions the
+    data describe, so guessing them would silently bias every result.
+    """
     p = Path(path)
     rows: list[tuple[float, float, float]] = []
     for line in p.read_text(errors="ignore").splitlines():
@@ -518,7 +547,8 @@ def load_polar_file(path: str | Path, name: str | None = None, **kw) -> TablePol
         raise ValueError(f"no usable polar rows found in {p}")
     arr = np.array(sorted(rows))
     return TablePolar(name=name or p.stem, alpha_data=arr[:, 0],
-                      cl_data=arr[:, 1], cd_data=arr[:, 2], **kw)
+                      cl_data=arr[:, 1], cd_data=arr[:, 2], re_ref=float(reynolds),
+                      thickness=float(thickness), **kw)
 
 
 def stack_tables(polars: Sequence[AirfoilPolar], n_alpha: int = 721) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -536,8 +566,9 @@ def stack_tables(polars: Sequence[AirfoilPolar], n_alpha: int = 721) -> tuple[np
 
 __all__ = [
     "AirfoilPolar", "AnalyticPolar", "TablePolar", "PolarTable",
-    "AIRFOIL_LIBRARY", "DEFAULT_AIRFOIL", "get_airfoil", "list_airfoils",
+    "AIRFOIL_LIBRARY", "FULL_SCALE_RE", "LOCK_OFFSET", "get_airfoil", "list_airfoils",
     "blended_polar", "load_polar_file", "stack_tables", "viterna_extrapolate",
     "prandtl_glauert", "critical_mach", "drag_divergence", "reynolds_drag_scale",
-    "reynolds_clmax_scale", "du_selig_stall_delay", "wrap_angle", "DEG", "GAMMA",
+    "reynolds_lift_ceiling", "thickness_drag_factor", "thickness_lift_factor",
+    "wrap_angle", "DEG", "GAMMA",
 ]

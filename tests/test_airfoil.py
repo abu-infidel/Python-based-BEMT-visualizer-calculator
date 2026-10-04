@@ -37,7 +37,7 @@ def test_polar_is_continuous(name):
 
 
 @pytest.mark.parametrize("name,alpha0,cl_max", [
-    ("naca0012", 0.0, 1.35), ("naca2412", -2.1, 1.52), ("naca4412", -4.2, 1.62),
+    ("naca_0012", 0.0, 1.5), ("clark_y", -4.2, 1.5), ("naca_64", -2.8, 1.4),
 ])
 def test_preset_parameters_are_recovered(name, alpha0, cl_max):
     summary = get_airfoil(name).summary()
@@ -46,7 +46,7 @@ def test_preset_parameters_are_recovered(name, alpha0, cl_max):
 
 
 def test_symmetric_section_is_symmetric():
-    polar = get_airfoil("naca0012")
+    polar = get_airfoil("naca_0012")
     a = np.linspace(-12.0, 12.0, 121) * DEG
     cl_p, cd_p = polar.base_polar(a)
     cl_n, cd_n = polar.base_polar(-a)
@@ -55,7 +55,7 @@ def test_symmetric_section_is_symmetric():
 
 
 def test_lift_slope_is_near_thin_airfoil_theory():
-    slope = get_airfoil("naca0012").summary()["cl_alpha_per_rad"]
+    slope = get_airfoil("naca_0012").summary()["cl_alpha_per_rad"]
     assert 5.5 < slope < 6.5, "should be close to 2 pi"
 
 
@@ -68,7 +68,7 @@ def test_viterna_is_bounded_near_zero():
 
 
 def test_reynolds_correction_raises_drag_at_low_re():
-    polar = get_airfoil("clarky")
+    polar = get_airfoil("clark_y")
     a = np.array([5.0 * DEG])
     _, cd_high = polar.evaluate(a, reynolds=np.array([1.0e6]))
     _, cd_low = polar.evaluate(a, reynolds=np.array([2.0e4]))
@@ -77,7 +77,7 @@ def test_reynolds_correction_raises_drag_at_low_re():
 
 
 def test_mach_correction_adds_wave_drag():
-    polar = get_airfoil("naca16509")
+    polar = get_airfoil("naca_16")
     a = np.array([3.0 * DEG])
     _, cd_sub = polar.evaluate(a, mach=np.array([0.3]))
     _, cd_tran = polar.evaluate(a, mach=np.array([0.9]))
@@ -85,7 +85,7 @@ def test_mach_correction_adds_wave_drag():
 
 
 def test_table_lookup_matches_direct_evaluation():
-    polar = get_airfoil("clarky")
+    polar = get_airfoil("clark_y")
     table = polar.tabulate(2881)
     alpha = np.linspace(-math.pi, math.pi, 997)
     cl_ref, cd_ref = polar.base_polar(alpha)
@@ -95,7 +95,7 @@ def test_table_lookup_matches_direct_evaluation():
 
 
 def test_stacked_tables_have_the_kernel_layout():
-    polars = [get_airfoil("clarky"), get_airfoil("e63"), get_airfoil("naca0012")]
+    polars = [get_airfoil("clark_y"), get_airfoil("ara_d"), get_airfoil("naca_0012")]
     alpha, cl, cd = stack_tables(polars, 721)
     assert alpha.shape == (721,)
     assert cl.shape == cd.shape == (3, 721)
@@ -117,3 +117,15 @@ def test_table_polar_extends_measured_data_to_the_full_circle():
 def test_unknown_airfoil_raises():
     with pytest.raises(KeyError):
         get_airfoil("not-an-airfoil")
+
+
+def test_thicker_sections_have_more_drag_and_thin_ones_less_lift():
+    from dataclasses import replace
+    base = get_airfoil("clark_y")
+    thin, nominal, thick = (replace(base, thickness=t) for t in (0.06, 0.117, 0.25))
+    assert thick.effective_cd_min() > nominal.effective_cd_min() > thin.effective_cd_min()
+    assert thin.max_lift() < nominal.max_lift()
+
+
+def test_lookup_accepts_names_as_well_as_keys():
+    assert get_airfoil("Clark Y").name == get_airfoil("clark_y").name

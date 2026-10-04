@@ -1,0 +1,266 @@
+#PROPWASH-REPORT 1
+# Structured results; specification: docs/report-format/README.md
+# Lines starting with '#' are comments. Values are JSON scalars; [unit]; {CODE} explains a null.
+
+[META]
+format = "PROPWASH-REPORT"
+format_version = 1
+generator = "propwash 2.0.0"
+created_utc = "2026-10-04T14:37:31Z"
+case_name = "Cessna 172N, McCauley 1C160/DTM7557, Lycoming O-320-H2AD"
+mode = "analysis"
+status = "ok"
+notice_count = 0
+
+[INPUTS]
+case.name = "Cessna 172N, McCauley 1C160/DTM7557, Lycoming O-320-H2AD"
+case.mode = "analysis"
+flight.altitude_ft = 6000 [ft]
+flight.isa_deviation_c = 0 [degC]
+flight.airspeed_ktas = 110 [kt]
+engine.rated_power_hp = 160 [hp]
+engine.rated_rpm = 2700 [rpm]
+engine.gear_ratio = 1 [-]
+engine.aspiration = "normal"
+engine.critical_altitude_ft = null [ft] {NOT_GIVEN}
+engine.bsfc_lb_hp_h = 0.42 [lb/(hp*h)]
+propeller.diameter_in = 75 [in]
+propeller.blades = 2 [-]
+propeller.activity_factor = 109 [-]
+propeller.spinner_diameter_in = 9 [in]
+propeller.planform = "standard"
+propeller.root_airfoil = "clark_y"
+propeller.tip_airfoil = "clark_y"
+propeller.root_thickness_pct = 20 [%]
+propeller.tip_thickness_pct = 7 [%]
+propeller.pitch_type = "fixed"
+propeller.pitch_in = 57 [in]
+propeller.fine_stop_deg = null [deg] {NOT_GIVEN}
+propeller.coarse_stop_deg = null [deg] {NOT_GIVEN}
+operating.mode = "set_rpm"
+operating.engine_rpm = 2500 [rpm]
+operating.power_pct = null [% rated] {NOT_GIVEN}
+airframe.weight_lb = 2300 [lb]
+airframe.wing_area_ft2 = 174 [ft^2]
+airframe.wing_span_ft = 35.83 [ft]
+airframe.cd0 = 0.0341 [-]
+airframe.oswald_e = 0.77 [-]
+airframe.cl_max = 1.56 [-]
+sizing.max_diameter_in = null [in] {NOT_GIVEN}
+sizing.tip_mach_limit = null [-] {NOT_GIVEN}
+sizing.design_cl = null [-] {NOT_GIVEN}
+sizing.airfoil = null {NOT_GIVEN}
+
+[MODEL]
+method = "blade element momentum theory, Prandtl tip and hub loss"
+atmosphere = "ISA 1976 with temperature offset"
+blade_elements = 60
+element_spacing = "cosine"
+reynolds_correction = true
+compressibility_correction = true
+engine_peak_torque_fraction = 0.78
+engine_torque_droop = 0.08
+engine_gagg_farrar_constant = 7.55
+engine_min_running_fraction = 0.25
+service_ceiling_climb_rate = 100 [ft/min]
+
+[ATMOSPHERE]
+pressure_altitude_ft = 6000 [ft]
+density_altitude_ft = 6000 [ft]
+temperature_c = 3.1128 [degC]
+pressure_pa = 81199.6 [Pa]
+density_kg_m3 = 1.02393 [kg/m^3]
+density_ratio = 0.83586 [-]
+speed_of_sound_m_s = 333.201 [m/s]
+dynamic_viscosity_pa_s = 1.731365e-05 [Pa*s]
+
+[ENGINE]
+rated_power_hp = 160 [hp]
+rated_power_kw = 119.312 [kW]
+rated_engine_rpm = 2700 [rpm]
+gear_ratio = 1 [-]
+max_prop_rpm = 2700 [rpm]
+min_running_prop_rpm = 675 [rpm]
+aspiration = "normal"
+altitude_power_factor = 0.81412 [-]
+full_throttle_power_at_rated_rpm_hp = 130.259 [hp]
+
+[PROPELLER]
+diameter_m = 1.905 [m]
+diameter_in = 75 [in]
+blades = 2
+hub_ratio = 0.12 [-]
+activity_factor_per_blade = 108.999 [-]
+total_activity_factor = 217.997 [-]
+activity_factor_lower_limit_r_over_r = 0.15 [-]
+mean_solidity = 0.088064 [-]
+max_chord_m = 0.168262 [m]
+planform = "standard"
+pitch_type = "fixed"
+beta75_deg = 17.8773 [deg]
+geometric_pitch_in = 57 [in]
+pitch_to_diameter = 0.76 [-]
+twist_law = "helical (constant geometric pitch)"
+
+[OPERATING_POINT]
+status = "ok"
+status_message = "Operating point found inside all limits."
+power_setting = "set_rpm"
+airspeed_ktas = 110 [kt]
+airspeed_m_s = 56.5888 [m/s]
+engine_rpm = 2500 [rpm]
+prop_rpm = 2500 [rpm]
+throttle_pct = 95.0316 [%]
+shaft_power_hp = 120.2 [hp]
+shaft_power_kw = 89.6328 [kW]
+power_pct_rated = 75.1247 [%]
+available_power_hp = 126.484 [hp]
+thrust_n = 1318.56 [N]
+thrust_lbf = 296.424 [lbf]
+torque_nm = 342.372 [N*m]
+torque_lbf_ft = 252.521 [lbf*ft]
+advance_ratio_j = 0.71293 [-]
+propulsive_efficiency = 0.83246 [-]
+figure_of_merit = null [-] {NA_IN_FORWARD_FLIGHT}
+ct = 0.0563213 [-]
+cp = 0.0482343 [-]
+cq = 0.00767673 [-]
+tip_speed_m_s = 249.364 [m/s]
+helical_tip_mach = 0.767418 [-]
+beta75_deg = 17.8773 [deg]
+disk_loading_n_m2 = 462.615 [N/m^2]
+disk_loading_lb_ft2 = 9.66191 [lb/ft^2]
+thrust_per_power_lbf_hp = 2.4661 [lbf/hp]
+fuel_flow_kg_h = 22.8991 [kg/h]
+fuel_flow_lb_h = 50.4838 [lb/h]
+fuel_flow_gal_h = 8.4018 [US gal/h]
+stalled_span_fraction = 0 [-]
+converged_span_fraction = 1 [-]
+
+[AIRFRAME]
+aspect_ratio = 7.3781 [-]
+induced_drag_factor_k = 0.0560293 [-]
+stall_speed_ktas = 54.7202 [kt]
+stall_speed_keas = 50.0281 [kt]
+lift_coefficient = 0.386041 [-]
+drag_n = 1125.01 [N]
+drag_lbf = 252.913 [lbf]
+thrust_minus_drag_lbf = 43.5109 [lbf]
+rate_of_climb_fpm = 210.735 [ft/min]
+level_trim_status = "ok"
+level_trim_engine_rpm = 2428.84 [rpm]
+level_trim_power_hp = 101.475 [hp]
+level_trim_power_pct = 63.4221 [%]
+level_trim_beta75_deg = 17.8773 [deg]
+level_trim_efficiency = 0.841324 [-]
+level_trim_fuel_flow_gal_h = 7.093 [US gal/h]
+level_speed_at_setting_ktas = 113.99 [kt]
+level_speed_at_setting_keas = 104.216 [kt]
+best_rate_of_climb_fpm = 335.845 [ft/min]
+best_climb_speed_ktas = 107.411 [kt]
+best_climb_speed_keas = 98.2013 [kt]
+service_ceiling_ft = 17391.3 [ft]
+absolute_ceiling_ft = 19772.7 [ft]
+ceilings_power_setting = "full_throttle"
+
+[TABLE.SPANWISE]
+# Blade state at the operating point, root to tip; per-span loads are for all blades.
+r_over_r[-],radius_m[m],chord_m[m],thickness_ratio[-],blade_angle_deg[deg],inflow_angle_deg[deg],alpha_deg[deg],cl[-],cd[-],relative_speed_m_s[m/s],mach[-],reynolds[-],thrust_per_span_n_m[N/m],torque_per_span_nm_m[N*m/m],loss_factor[-]
+0.120302,0.114587,0.104118,0.2,63.5595,67.2456,-3.68613,0.0557061,0.0161959,62.7647,0.188369,386475,2.77634,2.77362,0.0469621
+0.121507,0.115735,0.104314,0.199999,63.3314,66.507,-3.17564,0.111103,0.0156518,63.6313,0.19097,392549,12.9461,5.41226,0.105077
+0.123914,0.118028,0.104711,0.199995,62.8782,65.5829,-2.70468,0.162234,0.0152354,64.1502,0.192527,397255,23.469,8.02091,0.16933
+0.127516,0.121459,0.105318,0.199981,62.2063,64.5034,-2.29709,0.206523,0.0149217,64.6942,0.19416,402949,34.0451,10.571,0.234356
+0.132304,0.126019,0.106152,0.19995,61.3256,63.2664,-1.94083,0.245287,0.0146701,65.3492,0.196125,410251,45.1353,13.2003,0.299126
+0.138264,0.131696,0.107235,0.199889,60.2501,61.8758,-1.62571,0.279638,0.014471,66.1491,0.198526,419508,57.2004,16.0363,0.363155
+0.14538,0.138474,0.108597,0.199787,58.9966,60.3419,-1.34528,0.310288,0.0142971,67.1156,0.201427,431045,70.6812,19.1926,0.426069
+0.153632,0.146335,0.110328,0.199627,57.5815,58.6795,-1.09793,0.33742,0.0141348,68.2659,0.204879,445422,85.9838,22.7726,0.487511
+0.162999,0.155256,0.112904,0.199394,56.0289,56.9149,-0.88601,0.360786,0.0139706,69.6149,0.208928,464830,103.783,26.9573,0.547074
+0.173453,0.165214,0.116494,0.19907,54.3594,55.0701,-0.710736,0.380262,0.0137936,71.1761,0.213613,490366,124.736,31.9135,0.604313
+0.184967,0.176181,0.121084,0.198635,52.599,53.1677,-0.568661,0.396227,0.013591,72.9616,0.218972,522472,149.59,37.8241,0.658735
+0.197509,0.188127,0.126532,0.198072,50.7704,51.2277,-0.457362,0.408949,0.0133751,74.9812,0.225033,561092,178.946,44.8387,0.709808
+0.211044,0.20102,0.132541,0.197361,48.899,49.2701,-0.371108,0.419059,0.0131537,77.2425,0.23182,605463,213.332,53.0858,0.756982
+0.225536,0.214823,0.138632,0.196485,47.007,47.3115,-0.304512,0.427149,0.0129275,79.7502,0.239346,653850,252.887,62.5942,0.799726
+0.240945,0.2295,0.144125,0.195426,45.1153,45.3662,-0.250937,0.433952,0.012709,82.5067,0.247618,703249,297.195,73.2542,0.837576
+0.257228,0.245009,0.148354,0.19417,43.2428,43.4472,-0.204413,0.440131,0.012508,85.511,0.256635,750245,345.372,84.8413,0.870176
+0.274341,0.26131,0.15244,0.192704,41.406,41.5806,-0.174612,0.444629,0.0123035,88.759,0.266383,800188,398.942,97.7773,0.897267
+0.292237,0.278356,0.156604,0.191015,39.6182,39.7802,-0.162012,0.447391,0.0120926,92.2444,0.276843,854327,458.566,112.251,0.918838
+0.310867,0.2961,0.160704,0.189095,37.89,38.0536,-0.163601,0.448748,0.0118785,95.9588,0.287991,911997,524.313,128.296,0.935117
+0.330179,0.314496,0.16457,0.18694,36.2295,36.4056,-0.176169,0.449052,0.0116645,99.8921,0.299795,972216,596.056,145.898,0.946529
+0.350122,0.333491,0.168005,0.184545,34.6424,34.8388,-0.196427,0.44867,0.0114541,104.032,0.31222,1.03364e+06,673.417,164.977,0.95365
+0.37064,0.353035,0.170789,0.181912,33.1324,33.3535,-0.221108,0.447966,0.0112505,108.365,0.325225,1.09454e+06,755.711,185.371,0.957133
+0.391677,0.373072,0.17268,0.179044,31.7011,31.9482,-0.247036,0.447301,0.0110571,112.877,0.338766,1.15274e+06,841.868,206.815,0.957637
+0.413175,0.393549,0.173653,0.175949,30.3491,30.6219,-0.272789,0.446843,0.0108744,117.552,0.352796,1.20724e+06,931.195,229.139,0.955755
+0.435076,0.41441,0.174465,0.172637,29.0754,29.3779,-0.302528,0.446121,0.010693,122.373,0.367266,1.26263e+06,1025.95,252.954,0.951961
+0.457319,0.435597,0.175183,0.169119,27.8782,28.2139,-0.335648,0.445204,0.0105131,127.324,0.382123,1.31912e+06,1126.35,278.34,0.946628
+0.479844,0.457051,0.175784,0.165414,26.7552,27.1264,-0.37118,0.444202,0.0103357,132.386,0.397317,1.37627e+06,1232.25,305.275,0.940011
+0.502588,0.478715,0.176244,0.161539,25.7034,26.1117,-0.408391,0.443196,0.0101618,137.543,0.412794,1.43362e+06,1343.37,333.706,0.932263
+0.52549,0.500529,0.17654,0.157515,24.7195,25.1663,-0.446737,0.44225,0.00999257,142.777,0.4285,1.49067e+06,1459.31,363.551,0.923457
+0.548486,0.522433,0.176653,0.153365,23.8004,24.2862,-0.485821,0.441409,0.00982866,148.069,0.444383,1.54691e+06,1579.54,394.694,0.913608
+0.571514,0.544367,0.176394,0.149113,22.9424,23.4667,-0.524265,0.440835,0.0096757,153.402,0.460388,1.60027e+06,1702.31,426.696,0.902701
+0.59451,0.566271,0.175602,0.144785,22.1422,22.7031,-0.560947,0.440667,0.00953435,158.757,0.476461,1.64871e+06,1825.59,459.027,0.890701
+0.617412,0.588085,0.174378,0.140408,21.3963,21.9928,-0.596514,0.440828,0.00940211,164.118,0.492551,1.69251e+06,1948.84,491.56,0.877546
+0.640156,0.609749,0.172826,0.136007,20.7016,21.3333,-0.631669,0.441234,0.00927821,169.467,0.508603,1.73211e+06,2071.62,524.202,0.863169
+0.662681,0.631203,0.171049,0.131611,20.0549,20.7221,-0.667154,0.441788,0.00916188,174.786,0.524567,1.76811e+06,2193.58,556.886,0.847498
+0.684924,0.65239,0.169148,0.127244,19.4533,20.157,-0.70374,0.442386,0.00905233,180.059,0.540391,1.8012e+06,2314.42,589.575,0.830463
+0.706825,0.673251,0.167187,0.122932,18.8939,19.6359,-0.741996,0.44294,0.00894914,185.268,0.556025,1.83182e+06,2433.64,622.168,0.812
+0.728323,0.693728,0.164792,0.118699,18.3741,19.1536,-0.779495,0.443747,0.0088563,190.397,0.571419,1.85557e+06,2546.3,653.319,0.792087
+0.74936,0.713765,0.161889,0.114569,17.8916,18.7074,-0.815788,0.444854,0.0087754,195.431,0.586527,1.87108e+06,2649.77,682.313,0.770693
+0.769878,0.733309,0.158554,0.11056,17.4441,18.2955,-0.851474,0.446171,0.00871084,200.354,0.6013,1.87869e+06,2742.85,708.863,0.747783
+0.789821,0.752304,0.154864,0.106694,17.0294,17.9166,-0.887181,0.447596,0.00867295,205.15,0.615694,1.8789e+06,2824.43,732.743,0.723331
+0.809133,0.7707,0.150895,0.102985,16.6457,17.5692,-0.923574,0.449014,0.00867645,209.804,0.629664,1.87228e+06,2893.5,753.789,0.69732
+0.827763,0.788444,0.14672,0.0994494,16.2911,17.2525,-0.961375,0.450293,0.00873856,214.304,0.643168,1.85952e+06,2949.15,771.894,0.669747
+0.845659,0.80549,0.14241,0.0960979,15.9641,16.9655,-1.00137,0.451278,0.00887698,218.635,0.656166,1.84137e+06,2990.59,786.991,0.640616
+0.862772,0.821791,0.137832,0.0929406,15.6631,16.7059,-1.04276,0.452035,0.00911501,222.784,0.668617,1.816e+06,3014.36,798.248,0.609971
+0.879055,0.8373,0.132568,0.0899849,15.3869,16.469,-1.0821,0.453009,0.00946897,226.738,0.680485,1.77764e+06,3012.86,803.456,0.577905
+0.894464,0.851977,0.126682,0.087236,15.1341,16.2538,-1.11977,0.454109,0.00994987,230.486,0.691732,1.72679e+06,2984.93,802.273,0.544468
+0.908956,0.86578,0.120284,0.0846972,14.9036,16.0602,-1.15663,0.455165,0.0105617,234.016,0.702326,1.66469e+06,2930.46,794.579,0.50971
+0.922491,0.878673,0.113506,0.0823698,14.6944,15.8884,-1.19393,0.455937,0.0112997,237.317,0.712234,1.59305e+06,2850.11,780.393,0.473691
+0.935033,0.890619,0.106495,0.0802536,14.5057,15.7391,-1.23342,0.45609,0.0121486,240.381,0.721429,1.51395e+06,2745.24,759.88,0.436475
+0.946547,0.901586,0.0994096,0.078347,14.3366,15.6142,-1.27757,0.455162,0.0130807,243.198,0.729883,1.42978e+06,2617.88,733.342,0.39813
+0.957001,0.911544,0.091357,0.0766473,14.1863,15.5025,-1.31618,0.454669,0.0141064,245.758,0.737567,1.32779e+06,2453.99,695.849,0.358883
+0.966368,0.920465,0.0805545,0.075151,14.0543,15.3761,-1.32175,0.458948,0.01532,248.049,0.744444,1.1817e+06,2225.17,637.468,0.319091
+0.97462,0.928326,0.0690794,0.0738543,13.94,15.2548,-1.31485,0.464793,0.0166363,250.068,0.750502,1.02161e+06,1964.06,568.056,0.27859
+0.981736,0.935104,0.0584126,0.0727529,13.8428,15.1614,-1.31853,0.468446,0.0179247,251.811,0.755733,869884,1696.96,495.844,0.237283
+0.987696,0.940781,0.0493585,0.0718427,13.7629,15.1221,-1.35917,0.465476,0.0190074,253.278,0.760137,739334,1440.79,426.348,0.195175
+0.992484,0.945341,0.042244,0.0711197,13.6993,15.1718,-1.47247,0.449829,0.0196514,254.472,0.763718,635749,1201.65,361.95,0.152412
+0.996086,0.948772,0.0370965,0.0705807,13.6515,15.3641,-1.71255,0.412331,0.0196063,255.392,0.766481,560301,972.18,301.238,0.109367
+0.998493,0.951065,0.0337957,0.070223,13.6195,15.7916,-2.17209,0.337349,0.0186078,256.025,0.768379,511710,724.831,236.677,0.0669787
+0.999698,0.952213,0.0321929,0.0700446,13.6035,16.5666,-2.96315,0.205944,0.0167701,256.189,0.768871,487754,416.711,154.083,0.0292757
+[END_TABLE]
+
+[TABLE.SPEED_SWEEP]
+# Performance against airspeed at this altitude and the selected power setting (set_rpm). Nulls: no valid operating point, or below the stall speed for the airframe columns.
+airspeed_ktas[kt],status[],engine_rpm[rpm],throttle_pct[%],beta75_deg[deg],thrust_lbf[lbf],shaft_power_hp[hp],propulsive_efficiency[-],advance_ratio_j[-],helical_tip_mach[-],drag_lbf[lbf],rate_of_climb_fpm[ft/min]
+0,"power_not_available",null,null,null,null,null,null,null,null,null,null
+5.5,"power_not_available",null,null,null,null,null,null,null,null,null,null
+11,"power_not_available",null,null,null,null,null,null,null,null,null,null
+16.5,"power_not_available",null,null,null,null,null,null,null,null,null,null
+22,"power_not_available",null,null,null,null,null,null,null,null,null,null
+27.5,"power_not_available",null,null,null,null,null,null,null,null,null,null
+33,"power_not_available",null,null,null,null,null,null,null,null,null,null
+38.5,"power_not_available",null,null,null,null,null,null,null,null,null,null
+44,"power_not_available",null,null,null,null,null,null,null,null,null,null
+49.5,"power_not_available",null,null,null,null,null,null,null,null,null,null
+55,"power_not_available",null,null,null,null,null,null,null,null,249.784,null
+60.5,"power_not_available",null,null,null,null,null,null,null,null,225.914,null
+66,"power_not_available",null,null,null,null,null,null,null,null,211.329,null
+71.5,"power_not_available",null,null,null,null,null,null,null,null,203.584,null
+77,"power_not_available",null,null,null,null,null,null,null,null,201.078,null
+82.5,"power_not_available",null,null,null,null,null,null,null,null,202.721,null
+88,"power_not_available",null,null,null,null,null,null,null,null,207.757,null
+93.5,"power_not_available",null,null,null,null,null,null,null,null,215.642,null
+99,"power_not_available",null,null,null,null,null,null,null,null,225.981,null
+104.5,"power_not_available",null,null,null,null,null,null,null,null,238.479,null
+110,"ok",2500,95.0316,17.8773,296.424,120.2,0.83246,0.71293,0.767418,252.913,210.735
+115.5,"ok",2500,84.0987,17.8773,252.289,106.371,0.840652,0.748577,0.769341,269.112,-85.5543
+121,"ok",2500,72.2172,17.8773,207.315,91.3431,0.842754,0.784223,0.771354,286.943,-424.229
+126.5,"ok",2500,59.3594,17.8773,161.508,75.08,0.835065,0.81987,0.773454,306.302,-806.47
+132,"ok",2500,45.4979,17.8773,114.871,57.5475,0.808575,0.855516,0.775642,327.105,-1233.48
+137.5,"ok",2500,30.6062,17.8773,67.4079,38.7119,0.734732,0.891163,0.777917,349.284,-1706.5
+[END_TABLE]
+
+[NOTICES]
+
+[INTEGRITY]
+body_sha256 = "fc6a20cff28c62323e5577d575fa95942a93b9dd41aeff78d8ac0d931eb469f0"
+[END]

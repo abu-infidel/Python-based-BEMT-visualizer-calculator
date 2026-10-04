@@ -1,0 +1,126 @@
+#PROPWASH-REPORT 1
+# Structured results; specification: docs/report-format/README.md
+# Lines starting with '#' are comments. Values are JSON scalars; [unit]; {CODE} explains a null.
+
+[META]
+format = "PROPWASH-REPORT"
+format_version = 1
+generator = "propwash 2.0.0"
+created_utc = "2026-10-04T14:37:36Z"
+case_name = "Error example: incomplete form"
+mode = "analysis"
+status = "error"
+notice_count = 17
+
+[INPUTS]
+case.name = "Error example: incomplete form"
+case.mode = "analysis"
+flight.altitude_ft = null [ft] {NOT_GIVEN}
+flight.isa_deviation_c = null [degC] {NOT_GIVEN}
+flight.airspeed_ktas = null [kt] {NOT_GIVEN}
+engine.rated_power_hp = 180 [hp]
+engine.rated_rpm = null [rpm] {NOT_GIVEN}
+engine.gear_ratio = null [-] {NOT_GIVEN}
+engine.aspiration = null {NOT_GIVEN}
+engine.critical_altitude_ft = null [ft] {NOT_GIVEN}
+engine.bsfc_lb_hp_h = null [lb/(hp*h)] {NOT_GIVEN}
+propeller.diameter_in = -75 [in]
+propeller.blades = null [-] {NOT_GIVEN}
+propeller.activity_factor = null [-] {NOT_GIVEN}
+propeller.spinner_diameter_in = null [in] {NOT_GIVEN}
+propeller.planform = null {NOT_GIVEN}
+propeller.root_airfoil = null {NOT_GIVEN}
+propeller.tip_airfoil = null {NOT_GIVEN}
+propeller.root_thickness_pct = null [%] {NOT_GIVEN}
+propeller.tip_thickness_pct = null [%] {NOT_GIVEN}
+propeller.pitch_type = null {NOT_GIVEN}
+propeller.pitch_in = null [in] {NOT_GIVEN}
+propeller.fine_stop_deg = null [deg] {NOT_GIVEN}
+propeller.coarse_stop_deg = null [deg] {NOT_GIVEN}
+operating.mode = null {NOT_GIVEN}
+operating.engine_rpm = null [rpm] {NOT_GIVEN}
+operating.power_pct = null [% rated] {NOT_GIVEN}
+airframe.weight_lb = null [lb] {NOT_GIVEN}
+airframe.wing_area_ft2 = null [ft^2] {NOT_GIVEN}
+airframe.wing_span_ft = null [ft] {NOT_GIVEN}
+airframe.cd0 = null [-] {NOT_GIVEN}
+airframe.oswald_e = null [-] {NOT_GIVEN}
+airframe.cl_max = null [-] {NOT_GIVEN}
+sizing.max_diameter_in = null [in] {NOT_GIVEN}
+sizing.tip_mach_limit = null [-] {NOT_GIVEN}
+sizing.design_cl = null [-] {NOT_GIVEN}
+sizing.airfoil = null {NOT_GIVEN}
+
+[NOTICES]
+n001.code = "MISSING"
+n001.severity = "error"
+n001.field = "flight.altitude_ft"
+n001.message = "Pressure altitude is required"
+n002.code = "MISSING"
+n002.severity = "error"
+n002.field = "flight.isa_deviation_c"
+n002.message = "ISA temperature deviation is required"
+n003.code = "MISSING"
+n003.severity = "error"
+n003.field = "flight.airspeed_ktas"
+n003.message = "True airspeed is required"
+n004.code = "MISSING"
+n004.severity = "error"
+n004.field = "engine.rated_rpm"
+n004.message = "Rated engine RPM is required"
+n005.code = "MISSING"
+n005.severity = "error"
+n005.field = "engine.gear_ratio"
+n005.message = "Reduction gear ratio is required"
+n006.code = "MISSING"
+n006.severity = "error"
+n006.field = "engine.aspiration"
+n006.message = "Aspiration is required"
+n007.code = "MISSING"
+n007.severity = "error"
+n007.field = "propeller.blades"
+n007.message = "Number of blades is required"
+n008.code = "MISSING"
+n008.severity = "error"
+n008.field = "propeller.activity_factor"
+n008.message = "Activity factor (per blade) is required"
+n009.code = "MISSING"
+n009.severity = "error"
+n009.field = "propeller.spinner_diameter_in"
+n009.message = "Spinner diameter is required"
+n010.code = "MISSING"
+n010.severity = "error"
+n010.field = "propeller.planform"
+n010.message = "Blade planform is required"
+n011.code = "MISSING"
+n011.severity = "error"
+n011.field = "propeller.root_airfoil"
+n011.message = "Root section is required"
+n012.code = "MISSING"
+n012.severity = "error"
+n012.field = "propeller.tip_airfoil"
+n012.message = "Tip section is required"
+n013.code = "MISSING"
+n013.severity = "error"
+n013.field = "propeller.root_thickness_pct"
+n013.message = "Root thickness ratio is required"
+n014.code = "MISSING"
+n014.severity = "error"
+n014.field = "propeller.tip_thickness_pct"
+n014.message = "Tip thickness ratio is required"
+n015.code = "MISSING"
+n015.severity = "error"
+n015.field = "propeller.pitch_type"
+n015.message = "Pitch type is required"
+n016.code = "MISSING"
+n016.severity = "error"
+n016.field = "operating.mode"
+n016.message = "Power setting is required"
+n017.code = "INVALID"
+n017.severity = "error"
+n017.field = "propeller.diameter_in"
+n017.message = "Diameter must be > 0 in"
+
+[INTEGRITY]
+body_sha256 = "949a83ad4303fe50b07c55bf46215dfb40e4c3d0cf0bde5c3680a75bcc442878"
+[END]

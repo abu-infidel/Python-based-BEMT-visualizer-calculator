@@ -1,86 +1,122 @@
 """Command line interface.
 
-Uses argparse rather than a framework so the package has no CLI dependency;
-``rich`` is used for tables when it happens to be installed and plain text
-otherwise.
+Every calculation goes through the same case file the GUIs fill in::
+
+    propwash template -o my_case.json      # every input, all blank
+    # ...fill it in...
+    propwash run my_case.json -o my_report.txt
+    propwash parse my_report.txt --json    # read a report back (for other programs)
+    propwash validate                      # model vs Cessna 172N published data
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
+import sys
 from pathlib import Path
-
-import numpy as np
 
 from .version import PROJECT_NAME, PROJECT_TAGLINE, __version__
 
 
-# ---------------------------------------------------------------------------
-# Output helpers
-# ---------------------------------------------------------------------------
+def _load_case(path: str) -> dict:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(data, dict) and "inputs" in data and isinstance(data["inputs"], dict):
+        data = data["inputs"]
+    if not isinstance(data, dict):
+        raise SystemExit(f"{path}: expected a JSON object of field -> value")
+    return data
 
-def _console():
+
+def cmd_template(args) -> int:
+    from .case import blank_case
+    text = json.dumps(blank_case(args.mode), indent=2) + "\n"
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+        print(f"blank case -> {Path(args.output).resolve()}")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
+def cmd_fields(args) -> int:
+    from .case import FIELDS
+    for f in FIELDS:
+        kind = "choice: " + " | ".join(f.choices) if f.kind == "choice" else f.kind
+        unit = f" [{f.unit}]" if f.unit else ""
+        typical = f"  typical {f.typical[0]:g}-{f.typical[1]:g}" if f.typical else ""
+        print(f"{f.key:<34} {f.label}{unit}  ({kind}){typical}")
+        print(f"{'':<34} {f.help}")
+    return 0
+
+
+def _summary(report) -> str:
+    from .report import parse_report
+    d = parse_report(report.to_text())
+    out = [f"status: {report.status}"]
+    for name in ("OPERATING_POINT", "AIRFRAME", "DESIGN_POINT", "SIZING"):
+        sec = d["sections"].get(name)
+        if not sec:
+            continue
+        out.append(f"\n[{name}]")
+        for key, item in sec.items():
+            val = item["value"]
+            if val is None:
+                text = f"n/a ({item['code']})"
+            elif isinstance(val, float):
+                text = f"{val:,.4g} {item['unit']}".rstrip()
+            else:
+                text = f"{val} {item['unit']}".rstrip()
+            out.append(f"  {key:<36} {text}")
+    if d["notices"]:
+        out.append("\n[NOTICES]")
+        for n in d["notices"]:
+            field = f" ({n['field']})" if n["field"] else ""
+            out.append(f"  {n['severity'].upper():<8} {n['code']}{field}: {n['message']}")
+    return "\n".join(out)
+
+
+def cmd_run(args) -> int:
+    from .analysis import run
+    report = run(_load_case(args.case))
+    print(_summary(report))
+    if args.output:
+        report.save(args.output)
+        print(f"\nreport -> {Path(args.output).resolve()}")
+    return 1 if report.status == "error" else 0
+
+
+def cmd_parse(args) -> int:
+    from .report import ReportFormatError, parse_report
     try:
-        from rich.console import Console
-        return Console()
-    except ImportError:
-        return None
+        data = parse_report(Path(args.report).read_text(encoding="utf-8"),
+                            verify=not args.no_verify)
+    except ReportFormatError as exc:
+        print(f"{args.report}: {exc}", file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(data, indent=2))
+    else:
+        print(f"{data['format']['name']} v{data['format']['version']}, "
+              f"checksum {'ok' if data['integrity']['ok'] else 'NOT VERIFIED'}")
+        for name, sec in data["sections"].items():
+            print(f"[{name}] {len(sec)} values")
+        for name, t in data["tables"].items():
+            print(f"[TABLE.{name}] {len(t['rows'])} rows x {len(t['columns'])} columns")
+        print(f"{len(data['notices'])} notices")
+    return 0
 
 
-def _table(title: str, columns: list[str], rows: list[list[str]]) -> None:
-    console = _console()
-    if console is None:
-        widths = [max(len(c), *(len(r[i]) for r in rows)) if rows else len(c)
-                  for i, c in enumerate(columns)]
-        print(f"\n{title}")
-        print("  " + "  ".join(c.ljust(w) for c, w in zip(columns, widths)))
-        print("  " + "  ".join("-" * w for w in widths))
-        for row in rows:
-            print("  " + "  ".join(str(v).ljust(w) for v, w in zip(row, widths)))
-        return
+def cmd_validate(args) -> int:
+    from .validation import C172N_CASE, format_checks, run_validation
+    if args.write_case:
+        Path(args.write_case).write_text(json.dumps(C172N_CASE, indent=2) + "\n")
+        print(f"Cessna 172N reference case -> {Path(args.write_case).resolve()}\n")
+    print("Propwash against published Cessna 172N data (see docs/VALIDATION.md)\n")
+    checks = run_validation()
+    print(format_checks(checks))
+    return 0 if all(c.passed for c in checks) else 1
 
-    from rich.table import Table
-    table = Table(title=title, title_justify="left", header_style="bold",
-                  box=None, pad_edge=False)
-    for c in columns:
-        table.add_column(c)
-    for row in rows:
-        table.add_row(*[str(v) for v in row])
-    console.print(table)
-
-
-def _geometry_from_args(args):
-    from dataclasses import replace
-    from .geometry import get_preset
-    from .units import INCH
-
-    g = get_preset(args.prop)
-    kw = {}
-    if getattr(args, "blades", None):
-        kw["n_blades"] = int(args.blades)
-    if getattr(args, "diameter", None):
-        kw["radius"] = float(args.diameter) * INCH / 2.0
-    if getattr(args, "pitch", None):
-        kw["pitch_offset"] = math.radians(float(args.pitch))
-    return replace(g, **kw) if kw else g
-
-
-def _air_from_args(args):
-    from .atmosphere import isa
-    return isa(float(getattr(args, "altitude", 0.0) or 0.0),
-               delta_isa=float(getattr(args, "disa", 0.0) or 0.0))
-
-
-def _options_from_args(args):
-    from .bemt.core import SolverOptions
-    return SolverOptions(n_elements=int(getattr(args, "elements", 60) or 60))
-
-
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
 
 def cmd_env(args) -> int:
     from .colab.bootstrap import probe
@@ -88,156 +124,21 @@ def cmd_env(args) -> int:
     return 0
 
 
-def cmd_presets(args) -> int:
-    from .airfoil import get_airfoil, list_airfoils
-    from .geometry import get_preset, list_presets
-    from .motor import get_motor, list_motors
-
-    _table("Propellers", ["name", "blades", "diameter", "P/D", "AF", "solidity"],
-           [[n, str(g.n_blades), f"{g.diameter * 1000:.0f} mm",
-             f"{g.pitch_diameter_ratio():.2f}", f"{g.activity_factor():.0f}",
-             f"{g.mean_solidity():.3f}"]
-            for n in list_presets() for g in (get_preset(n),)])
-
-    _table("Airfoil sections", ["key", "name", "t/c", "alpha_0", "Cl_max", "L/D max"],
-           [[k, a.name, f"{a.thickness:.3f}", f"{s['alpha_0_deg']:.1f} deg",
-             f"{s['cl_max']:.2f}", f"{s['ld_max']:.0f}"]
-            for k in list_airfoils()
-            for a in (get_airfoil(k),) for s in (a.summary(),)])
-
-    _table("Motors", ["name", "Kv", "cells", "volts", "Rm", "I max", "no-load rpm"],
-           [[n, f"{m.kv:.0f}", str(m.cells), f"{m.voltage:.1f} V",
-             f"{m.resistance * 1000:.0f} mohm", f"{m.max_current:.0f} A",
-             f"{m.no_load_rpm():,.0f}"]
-            for n in list_motors() for m in (get_motor(n),)])
-    return 0
-
-
-def cmd_solve(args) -> int:
-    from .bemt.core import OperatingPoint
-    from .bemt.solver import PropellerSolver, spanwise_frame
-
-    geom = _geometry_from_args(args)
-    solver = PropellerSolver(geom, _options_from_args(args), args.backend)
-    result = solver.solve(OperatingPoint(rpm=args.rpm, v_inf=args.speed,
-                                         air=_air_from_args(args)))
-
-    print(f"\n{geom.describe()}")
-    print(f"{result.meta['air']}\n")
-    summary = result.summary()
-    _table(f"Operating point: {args.rpm:,.0f} rpm, V = {args.speed:.1f} m/s",
-           ["quantity", "value"],
-           [[k, f"{v:,.5g}"] for k, v in summary.items()])
-
-    if args.spanwise:
-        frame = spanwise_frame(result, solver.stations)
-        if hasattr(frame, "to_csv"):
-            path = Path(args.spanwise)
-            frame.to_csv(path, index=False)
-            print(f"\nSpanwise data -> {path.resolve()}")
-        else:
-            print("\npandas is not installed; cannot write the spanwise CSV")
-
-    if args.json:
-        Path(args.json).write_text(json.dumps(summary, indent=2))
-        print(f"Summary -> {Path(args.json).resolve()}")
-    return 0
-
-
-def cmd_match(args) -> int:
-    from .bemt.sweep import match_operating_point
-    from .motor import get_motor
-
-    geom = _geometry_from_args(args)
-    motor = get_motor(args.motor)
-    if args.cells:
-        motor = motor.with_cells(int(args.cells))
-    if args.kv:
-        from dataclasses import replace
-        motor = replace(motor, kv=float(args.kv))
-
-    mp = match_operating_point(geom, motor, v_inf=args.speed, throttle=args.throttle,
-                               air=_air_from_args(args), options=_options_from_args(args),
-                               backend=args.backend)
-    print(f"\n{geom.describe()}")
-    print(f"{motor.describe()}\n")
-    if not mp.converged:
-        print("No torque balance found -- the motor either cannot turn this "
-              "propeller or never loads up.\n")
-    _table("Matched operating point", ["quantity", "value"], [
-        ["shaft speed", f"{mp.rpm:,.0f} rpm"],
-        ["thrust", f"{mp.thrust:.3f} N  ({mp.thrust / 9.80665 * 1000:,.0f} gf)"],
-        ["shaft torque", f"{mp.torque:.4f} N m"],
-        ["shaft power", f"{mp.shaft_power:,.1f} W"],
-        ["electrical power", f"{mp.electrical_power:,.1f} W"],
-        ["current", f"{mp.current:.2f} A"],
-        ["motor efficiency", f"{mp.motor_efficiency * 100:.1f} %"],
-        ["system efficiency", f"{mp.system_efficiency * 100:.1f} %"],
-    ])
-    return 0
-
-
-def cmd_sweep(args) -> int:
-    from .bemt.sweep import j_sweep
-
-    geom = _geometry_from_args(args)
-    sweep = j_sweep(geom, rpm=args.rpm, j_max=args.j_max, n=args.points,
-                    air=_air_from_args(args), options=_options_from_args(args),
-                    backend=args.backend)
-    j = sweep.axes["j"]
-    eta = np.nan_to_num(np.asarray(sweep["efficiency"]))
-    best = int(np.argmax(eta))
-
-    stride = max(len(j) // 18, 1)
-    _table(f"{geom.name} at {args.rpm:,.0f} rpm",
-           ["J", "CT", "CP", "eta", "thrust [N]", "power [W]"],
-           [[f"{j[i]:.3f}", f"{sweep['ct'][i]:.4f}", f"{sweep['cp'][i]:.4f}",
-             f"{eta[i]:.3f}", f"{sweep['thrust'][i]:.2f}", f"{sweep['power'][i]:.0f}"]
-            for i in range(0, len(j), stride)])
-    print(f"\nPeak efficiency {eta[best]:.3f} at J = {j[best]:.3f} "
-          f"(V = {j[best] * args.rpm / 60 * geom.diameter:.1f} m/s)")
-
-    if args.csv:
-        try:
-            sweep.to_frame().to_csv(args.csv, index=False)
-            print(f"Sweep -> {Path(args.csv).resolve()}")
-        except ImportError:
-            print("pandas is not installed; cannot write the CSV")
-    if args.plot:
-        import matplotlib
-        matplotlib.use("Agg")
-        from .viz.plots import j_sweep_figure
-        j_sweep_figure(sweep).savefig(args.plot, dpi=140, bbox_inches="tight")
-        print(f"Chart -> {Path(args.plot).resolve()}")
-    return 0
-
-
-def cmd_mesh(args) -> int:
-    from .mesh import build_propeller_mesh
-
-    geom = _geometry_from_args(args)
-    mesh = build_propeller_mesh(geom, n_span=args.span, n_chord=args.chord)
-    out = Path(args.output or ".")
-    out.mkdir(parents=True, exist_ok=True)
-    stem = geom.name.replace(" ", "_").replace("/", "-")
-
-    (out / f"{stem}.obj").write_text(mesh.to_obj())
-    (out / f"{stem}.stl").write_bytes(mesh.to_stl())
-    geom.save(out / f"{stem}.json")
-
-    print(f"\n{geom.describe()}")
-    print(f"{mesh.describe()}\n")
-    for p in sorted(out.glob(f"{stem}.*")):
-        print(f"  {p.name:<36} {p.stat().st_size / 1024:9.1f} kB")
-    return 0
-
-
 def cmd_bench(args) -> int:
     from .accel.bench import benchmark
-    geom = _geometry_from_args(args)
-    print()
-    rep = benchmark(geom, n_cases=args.cases, n_elements=args.elements,
-                    n_bisect=args.bisect, air=_air_from_args(args), verbose=False)
+    from .analysis import build_geometry
+    from .atmosphere import isa
+    from .case import parse_case
+
+    source = args.case
+    if source is None:
+        from .validation import C172N_CASE
+        raw, label = C172N_CASE, "Cessna 172N reference propeller"
+    else:
+        raw, label = _load_case(source), source
+    geom, _ = build_geometry(parse_case(raw))
+    print(f"\nbenchmark blade: {label}")
+    rep = benchmark(geom, isa(0.0), n_cases=args.cases, n_bisect=args.bisect, verbose=False)
     print(rep.format())
     print()
     return 0
@@ -250,7 +151,6 @@ def cmd_cuda_check(args) -> int:
     if args.dump:
         Path(args.dump).write_text(kernel_source())
         print(f"CUDA source -> {Path(args.dump).resolve()}")
-
     arches = tuple(args.arch) if args.arch else DEFAULT_ARCHITECTURES
     print("\nCompiling the raw CUDA C kernel with NVRTC (no GPU needed)\n")
     try:
@@ -268,112 +168,75 @@ def cmd_gui(args) -> int:
         print(f"The desktop GUI needs PySide6 and pyqtgraph: {exc}")
         print('  pip install "propwash[desktop]"   # or: pip install PySide6 pyqtgraph PyOpenGL')
         return 1
-    return launch(preset=args.prop, motor=args.motor, dark=not args.light,
-                  n_elements=args.elements)
+    return launch(case=_load_case(args.case) if args.case else None, dark=not args.light)
 
 
 def cmd_colab(args) -> int:
     from .colab.bootstrap import in_notebook, probe
     if in_notebook():
         from .colab import launch
-        launch(preset=args.prop, motor=args.motor, dark=args.dark)
+        launch()
         return 0
     print(probe().report())
-    print("\nThe notebook GUI needs a notebook.  In Colab or Jupyter run:\n")
-    print("    !pip install -q propwash            # or: %pip install -e .")
+    print("\nThe notebook app needs a notebook.  In Colab or Jupyter run:\n")
     print("    import propwash.colab as pc")
-    print("    pc.setup()                          # installs and reports")
-    print("    lab = pc.launch()                   # the GUI\n")
-    print("Or just open notebooks/Propwash_Propeller_Lab.ipynb in Colab.")
+    print("    pc.setup()")
+    print("    app = pc.launch()\n")
+    print("Or open notebooks/Propwash_Propeller_Lab.ipynb in Colab (see docs/COLAB.md).")
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Parser
-# ---------------------------------------------------------------------------
-
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="propwash",
-        description=f"{PROJECT_NAME} {__version__} -- {PROJECT_TAGLINE}")
+        prog="propwash", description=f"{PROJECT_NAME} {__version__} -- {PROJECT_TAGLINE}")
     p.add_argument("--version", action="version", version=f"{PROJECT_NAME} {__version__}")
     sub = p.add_subparsers(dest="command", required=True)
 
-    def add_prop(sp, default_rpm: float | None = None):
-        sp.add_argument("--prop", default="APC 10x5 (sport)", help="propeller preset")
-        sp.add_argument("--blades", type=int, help="override blade count")
-        sp.add_argument("--diameter", type=float, help="override diameter [in]")
-        sp.add_argument("--pitch", type=float, help="collective pitch offset [deg]")
-        sp.add_argument("--altitude", type=float, default=0.0, help="altitude [m]")
-        sp.add_argument("--disa", type=float, default=0.0, help="ISA temperature offset [K]")
-        sp.add_argument("--elements", type=int, default=60, help="blade elements")
-        sp.add_argument("--backend", default="auto",
-                        help="numpy | numba-cpu | numba-cuda | cupy | torch | auto")
-        if default_rpm is not None:
-            sp.add_argument("--rpm", type=float, default=default_rpm)
+    sp = sub.add_parser("template", help="write a blank case file (every input empty)")
+    sp.add_argument("--mode", choices=("analysis", "sizing"))
+    sp.add_argument("-o", "--output")
+    sp.set_defaults(func=cmd_template)
 
-    sp = sub.add_parser("env", help="report the runtime and available backends")
+    sp = sub.add_parser("fields", help="describe every input field")
+    sp.set_defaults(func=cmd_fields)
+
+    sp = sub.add_parser("run", help="calculate a case file; -o writes the .txt report")
+    sp.add_argument("case")
+    sp.add_argument("-o", "--output", help="write the structured report here")
+    sp.set_defaults(func=cmd_run)
+
+    sp = sub.add_parser("parse", help="read a report file back")
+    sp.add_argument("report")
+    sp.add_argument("--json", action="store_true", help="print as JSON")
+    sp.add_argument("--no-verify", action="store_true", help="ignore a checksum mismatch")
+    sp.set_defaults(func=cmd_parse)
+
+    sp = sub.add_parser("validate", help="compare with published Cessna 172N data")
+    sp.add_argument("--write-case", help="also save the reference case to this JSON file")
+    sp.set_defaults(func=cmd_validate)
+
+    sp = sub.add_parser("env", help="report the runtime and compute backends")
     sp.set_defaults(func=cmd_env)
 
-    sp = sub.add_parser("presets", help="list propellers, sections and motors")
-    sp.set_defaults(func=cmd_presets)
-
-    sp = sub.add_parser("solve", help="solve one operating point")
-    add_prop(sp, 6000.0)
-    sp.add_argument("--speed", type=float, default=0.0, help="airspeed [m/s]")
-    sp.add_argument("--spanwise", help="write spanwise data to this CSV")
-    sp.add_argument("--json", help="write the summary to this JSON file")
-    sp.set_defaults(func=cmd_solve)
-
-    sp = sub.add_parser("match", help="solve the propeller/motor torque balance")
-    add_prop(sp)
-    sp.add_argument("--motor", default="Sport 2820 kv1000")
-    sp.add_argument("--cells", type=int, help="override LiPo cell count")
-    sp.add_argument("--kv", type=float, help="override motor Kv")
-    sp.add_argument("--throttle", type=float, default=1.0)
-    sp.add_argument("--speed", type=float, default=0.0, help="airspeed [m/s]")
-    sp.set_defaults(func=cmd_match)
-
-    sp = sub.add_parser("sweep", help="advance-ratio sweep")
-    add_prop(sp, 8000.0)
-    sp.add_argument("--j-max", type=float, default=1.2, dest="j_max")
-    sp.add_argument("--points", type=int, default=60)
-    sp.add_argument("--csv", help="write the sweep to this CSV")
-    sp.add_argument("--plot", help="write a chart to this PNG")
-    sp.set_defaults(func=cmd_sweep)
-
-    sp = sub.add_parser("mesh", help="export the 3-D blade as OBJ and STL")
-    add_prop(sp)
-    sp.add_argument("--span", type=int, default=44)
-    sp.add_argument("--chord", type=int, default=49)
-    sp.add_argument("-o", "--output", default="exports")
-    sp.set_defaults(func=cmd_mesh)
-
-    sp = sub.add_parser("bench", help="benchmark and cross-validate the backends")
-    add_prop(sp)
-    sp.add_argument("--cases", type=int, default=4096)
-    sp.add_argument("--bisect", type=int, default=60)
+    sp = sub.add_parser("bench", help="benchmark and cross-check the compute backends")
+    sp.add_argument("--case", help="case file whose propeller to use "
+                    "(otherwise the Cessna 172N reference propeller)")
+    sp.add_argument("--cases", type=int, default=4096, help="operating points per backend")
+    sp.add_argument("--bisect", type=int, default=60, help="bisection steps per element")
     sp.set_defaults(func=cmd_bench)
 
     sp = sub.add_parser("cuda-check", help="compile the raw CUDA C kernel with NVRTC")
     sp.add_argument("--dump", help="also write the CUDA source to this .cu file")
-    sp.add_argument("--arch", nargs="*", metavar="compute_XX",
-                    help="target architectures (default: 75, 80, 89)")
+    sp.add_argument("--arch", nargs="*", metavar="compute_XX")
     sp.set_defaults(func=cmd_cuda_check)
 
     sp = sub.add_parser("gui", help="launch the desktop GUI")
-    sp.add_argument("--prop", default=None)
-    sp.add_argument("--motor", default=None)
-    sp.add_argument("--elements", type=int, default=48)
+    sp.add_argument("--case", help="open with this case file filled in")
     sp.add_argument("--light", action="store_true", help="light theme")
     sp.set_defaults(func=cmd_gui)
 
-    sp = sub.add_parser("colab", help="notebook GUI instructions, or launch it")
-    sp.add_argument("--prop", default=None)
-    sp.add_argument("--motor", default=None)
-    sp.add_argument("--dark", action="store_true")
+    sp = sub.add_parser("colab", help="notebook app instructions, or launch it")
     sp.set_defaults(func=cmd_colab)
-
     return p
 
 

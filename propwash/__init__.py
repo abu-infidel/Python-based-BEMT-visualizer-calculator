@@ -1,42 +1,36 @@
-"""Propwash -- a GPU-accelerated blade-element-momentum propeller laboratory.
+"""Propwash -- a full-size aircraft propeller calculator.
 
-Quick start::
+Every calculation starts from a case: a flat set of inputs with no defaults.
+::
 
-    from propwash import get_preset, OperatingPoint, solve
+    from propwash import blank_case, run
 
-    prop = get_preset("APC 10x5 (sport)")
-    result = solve(prop, OperatingPoint(rpm=8000, v_inf=12.0))
-    print(result.summary())
+    case = blank_case("analysis")       # every field None -- fill them in
+    case.update({...})
+    report = run(case)                  # validated, computed, never made up
+    report.save("my_report.txt")        # structured text, docs/report-format/
 
-The GUI is the point of the package, though::
-
-    python -m propwash gui          # desktop (Qt + OpenGL)
-    python -m propwash colab        # in-notebook (ipywidgets + Plotly)
-    python -m propwash bench        # what can this machine actually do?
-
-Submodules are imported lazily: importing :mod:`propwash` pulls in NumPy and
-nothing else, so a Colab cell that only wants the solver does not pay for Qt,
-Plotly or CUDA.
+Front ends: ``python -m propwash gui`` (desktop), ``propwash.colab.launch()``
+(notebook) and the ``propwash`` command line.  Submodules that need Qt, Plotly
+or CUDA are imported lazily, so ``import propwash`` costs only NumPy.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from .airfoil import (AIRFOIL_LIBRARY, AnalyticPolar, TablePolar, get_airfoil,
-                      list_airfoils)
-from .atmosphere import SEA_LEVEL, AirState, isa
+from .airfoil import AIRFOIL_LIBRARY, AnalyticPolar, TablePolar, get_airfoil, list_airfoils
+from .analysis import run
+from .atmosphere import AirState, isa
 from .bemt.core import BEMTResult, OperatingPoint, SolverOptions
 from .bemt.solver import PropellerSolver, solve, solve_grid, spanwise_frame
-from .bemt.sweep import (SweepResult, envelope_map, j_sweep, match_operating_point,
-                         pitch_rpm_map, rpm_sweep, thrust_required_speed)
-from .engine import (ENGINE_PRESETS, DEFAULT_ENGINE, PistonEngine, get_engine,
-                     list_engines)
-from .geometry import (AIRCRAFT_PRESETS, DRONE_PRESETS, PROP_PRESETS,
-                       BladeGeometry, Distribution, get_preset, list_presets)
-from .motor import MOTOR_PRESETS, MotorSpec, get_motor, list_motors
-from .sizing import (BladeDesign, DiskSizing, adkins_liebeck_design,
-                     diameter_sweep, drag_from_weight, momentum_sizing,
+from .bemt.sweep import SweepResult, envelope_map, j_sweep, pitch_rpm_map, rpm_sweep
+from .case import FIELDS, Case, CaseError, blank_case, parse_case, required_keys
+from .engine import PistonEngine
+from .geometry import (PLANFORMS, BladeGeometry, Distribution, full_size_blade,
+                       list_planforms)
+from .report import Report, ReportFormatError, parse_report
+from .sizing import (BladeDesign, SizingResult, adkins_liebeck_design, size_propeller,
                      verify_design)
 from .version import PROJECT_NAME, PROJECT_TAGLINE, __version__
 
@@ -48,6 +42,7 @@ _LAZY = {
     "build_propeller_mesh": ("propwash.mesh", "build_propeller_mesh"),
     "PropellerMesh": ("propwash.mesh", "PropellerMesh"),
     "propeller_figure": ("propwash.viz.plotly3d", "propeller_figure"),
+    "run_validation": ("propwash.validation", "run_validation"),
     "launch_gui": ("propwash.gui", "launch"),
     "launch_colab": ("propwash.colab", "launch"),
 }
@@ -56,37 +51,20 @@ _LAZY = {
 def __getattr__(name: str) -> Any:
     """Lazy re-export so heavy optional dependencies stay optional."""
     if name in _LAZY:
-        module_name, attr = _LAZY[name]
         import importlib
+        module_name, attr = _LAZY[name]
         return getattr(importlib.import_module(module_name), attr)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def __dir__() -> list[str]:
-    return sorted(list(globals()) + list(_LAZY))
+    raise AttributeError(f"module 'propwash' has no attribute {name!r}")
 
 
 __all__ = [
-    "__version__", "PROJECT_NAME", "PROJECT_TAGLINE",
-    # atmosphere
-    "AirState", "isa", "SEA_LEVEL",
-    # sections
-    "AnalyticPolar", "TablePolar", "AIRFOIL_LIBRARY", "get_airfoil", "list_airfoils",
-    # geometry
-    "BladeGeometry", "Distribution", "PROP_PRESETS", "get_preset", "list_presets",
-    "AIRCRAFT_PRESETS", "DRONE_PRESETS",
-    # powerplants
-    "MotorSpec", "MOTOR_PRESETS", "get_motor", "list_motors",
-    "PistonEngine", "ENGINE_PRESETS", "DEFAULT_ENGINE", "get_engine", "list_engines",
-    # sizing and design
-    "DiskSizing", "BladeDesign", "momentum_sizing", "diameter_sweep",
-    "drag_from_weight", "adkins_liebeck_design", "verify_design",
-    # solver
-    "OperatingPoint", "SolverOptions", "BEMTResult", "PropellerSolver",
-    "solve", "solve_grid", "spanwise_frame",
-    # sweeps
-    "SweepResult", "j_sweep", "rpm_sweep", "pitch_rpm_map", "envelope_map",
-    "match_operating_point", "thrust_required_speed",
-    # lazy
-    *sorted(_LAZY),
+    "run", "blank_case", "parse_case", "required_keys", "Case", "CaseError", "FIELDS",
+    "Report", "parse_report", "ReportFormatError",
+    "AIRFOIL_LIBRARY", "AnalyticPolar", "TablePolar", "get_airfoil", "list_airfoils",
+    "AirState", "isa", "BEMTResult", "OperatingPoint", "SolverOptions",
+    "PropellerSolver", "solve", "solve_grid", "spanwise_frame", "SweepResult",
+    "envelope_map", "j_sweep", "pitch_rpm_map", "rpm_sweep", "PistonEngine",
+    "PLANFORMS", "BladeGeometry", "Distribution", "full_size_blade", "list_planforms",
+    "BladeDesign", "SizingResult", "adkins_liebeck_design", "size_propeller",
+    "verify_design", "PROJECT_NAME", "PROJECT_TAGLINE", "__version__", *_LAZY,
 ]

@@ -96,56 +96,60 @@ def mach_lift_ceiling(mach, cl_max):
 
 
 def apply_corrections(cl, cd, w, chord, rho, mu, a_sound, thickness, re_ref,
-                      m_crit0, cl_max, flags):
-    """Reynolds and compressibility scaling, identical to the NumPy twin."""
+                      kappa, cl_max, flags):
+    """Full-size Reynolds and compressibility corrections (NumPy twin in core.py)."""
+    re_cl = 1.0
     if flags & FLAG_REYNOLDS:
         re = rho * w * chord / mu
-        if re < 1.0e3:
-            re = 1.0e3
-        ratio = re_ref / re
-        scale = ratio ** 0.2
-        low = 2.0e4 / re - 1.0
-        if low > 0.0:
-            scale *= 1.0 + 0.45 * low
-        if scale < 0.5:
-            scale = 0.5
-        elif scale > 4.0:
-            scale = 4.0
+        if re < 1.0e4:
+            re = 1.0e4
+        scale = (re_ref / re) ** 0.2
+        if scale < 0.75:
+            scale = 0.75
+        elif scale > 1.6:
+            scale = 1.6
         cd *= scale
-        cls = 1.0 - 0.14 * math.log10(ratio)
-        if cls < 0.45:
-            cls = 0.45
-        elif cls > 1.12:
-            cls = 1.12
-        cl *= cls
+        re_cl = 1.0 + 0.06 * math.log10(re / re_ref)
+        if re_cl < 0.85:
+            re_cl = 0.85
+        elif re_cl > 1.05:
+            re_cl = 1.05
 
     if flags & FLAG_MACH:
         m = w / a_sound
         if m < 0.0:
             m = 0.0
-        elif m > 0.92:
-            m = 0.92
-        denom = 1.0 - m * m
+        m_pg = m
+        if m_pg > 0.92:
+            m_pg = 0.92
+        denom = 1.0 - m_pg * m_pg
         if denom < 1.0e-3:
             denom = 1.0e-3
         cl /= math.sqrt(denom)
-        # Compressibility raises the lift slope but lowers the stall ceiling.
-        ceiling = mach_lift_ceiling(m, cl_max)
+        ceiling = mach_lift_ceiling(m_pg, cl_max) * re_cl
         if cl > ceiling:
             cl = ceiling
         elif cl < -ceiling:
             cl = -ceiling
-        m_dd = m_crit0 - 0.1 * math.fabs(cl) - thickness
-        dm = m - m_dd
+        m_w = m
+        if m_w > 1.2:
+            m_w = 1.2
+        dm = m_w - (kappa - 0.1 * math.fabs(cl) - thickness - 0.1077)
         if dm > 0.0:
             cd += 20.0 * dm * dm * dm * dm
+    else:
+        ceiling = cl_max * re_cl
+        if cl > ceiling:
+            cl = ceiling
+        elif cl < -ceiling:
+            cl = -ceiling
 
     if cd < 1.0e-5:
         cd = 1.0e-5
     return cl, cd
 
 
-def element_state(phi, twist, r, chord, sigma, thickness, re_ref, m_crit0, cl_max,
+def element_state(phi, twist, r, chord, sigma, thickness, re_ref, kappa, cl_max,
                   base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
                   omega_r, v_inf, rho, mu, a_sound, r_tip, r_hub, n_blades, flags):
     """Full element state at a trial inflow angle.
@@ -182,7 +186,7 @@ def element_state(phi, twist, r, chord, sigma, thickness, re_ref, m_crit0, cl_ma
         w = vmin
 
     cl, cd = apply_corrections(cl0, cd0, w, chord, rho, mu, a_sound,
-                               thickness, re_ref, m_crit0, cl_max, flags)
+                               thickness, re_ref, kappa, cl_max, flags)
 
     cn = cl * cp - cd * sp
     ct = cl * sp + cd * cp
@@ -192,7 +196,7 @@ def element_state(phi, twist, r, chord, sigma, thickness, re_ref, m_crit0, cl_ma
     return residual, w, cl, cd, cn, ct, f_loss, alpha
 
 
-def solve_phi(twist, r, chord, sigma, thickness, re_ref, m_crit0, cl_max,
+def solve_phi(twist, r, chord, sigma, thickness, re_ref, kappa, cl_max,
               base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
               omega_r, v_inf, rho, mu, a_sound, r_tip, r_hub, n_blades,
               flags, n_bisect, phi_lo, phi_hi):
@@ -205,11 +209,11 @@ def solve_phi(twist, r, chord, sigma, thickness, re_ref, m_crit0, cl_max,
     lo = phi_lo
     hi = phi_hi
 
-    r_lo = element_state(lo, twist, r, chord, sigma, thickness, re_ref, m_crit0,
+    r_lo = element_state(lo, twist, r, chord, sigma, thickness, re_ref, kappa,
                          cl_max, base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
                          omega_r, v_inf, rho, mu, a_sound, r_tip, r_hub,
                          n_blades, flags)[0]
-    r_hi = element_state(hi, twist, r, chord, sigma, thickness, re_ref, m_crit0,
+    r_hi = element_state(hi, twist, r, chord, sigma, thickness, re_ref, kappa,
                          cl_max, base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
                          omega_r, v_inf, rho, mu, a_sound, r_tip, r_hub,
                          n_blades, flags)[0]
@@ -219,7 +223,7 @@ def solve_phi(twist, r, chord, sigma, thickness, re_ref, m_crit0, cl_max,
     for _ in range(n_bisect):
         mid = 0.5 * (lo + hi)
         r_mid = element_state(mid, twist, r, chord, sigma, thickness, re_ref,
-                              m_crit0, cl_max, base, n_alpha, alpha0, d_alpha,
+                              kappa, cl_max, base, n_alpha, alpha0, d_alpha,
                               cl_tab, cd_tab, omega_r, v_inf, rho, mu, a_sound,
                               r_tip, r_hub, n_blades, flags)[0]
         if (r_lo * r_mid) <= 0.0:

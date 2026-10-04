@@ -66,7 +66,7 @@ class PropellerSolver:
         """Change collective pitch.
 
         Only the twist array shifts, so the polar tables stay valid; this is the
-        cheap path the GUI slider uses at interactive rates.
+        cheap path that pitch sweeps use.
         """
         self._geometry = replace(self._geometry, pitch_offset=pitch_offset)
         if self._stations is not None:
@@ -112,10 +112,10 @@ class PropellerSolver:
 # Convenience functions
 # ---------------------------------------------------------------------------
 
-def solve(geometry: BladeGeometry, op: OperatingPoint | None = None,
+def solve(geometry: BladeGeometry, op: OperatingPoint,
           options: SolverOptions | None = None) -> BEMTResult:
     """One-shot solve without keeping a solver around."""
-    return PropellerSolver(geometry, options).solve(op or OperatingPoint())
+    return PropellerSolver(geometry, options).solve(op)
 
 
 def solve_grid(geometry: BladeGeometry, rpm, v_inf, air: AirState | None = None,

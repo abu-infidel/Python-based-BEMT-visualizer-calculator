@@ -315,15 +315,13 @@ def polar_figure(polar, dark: bool = False, figsize: tuple[float, float] = (11.0
     return fig
 
 
-def matching_figure(rpm: np.ndarray, prop_torque: np.ndarray, motor_torque: np.ndarray,
+def matching_figure(rpm: np.ndarray, prop_torque: np.ndarray, engine_torque: np.ndarray,
                     match_rpm: float | None = None, dark: bool = False,
                     figsize: tuple[float, float] = (6.6, 4.2)):
     """Why the propeller spins at the speed it does.
 
     Two torque curves on one scale: the propeller's demand rising with RPM and
-    the motor's supply falling toward its no-load speed.  Where they cross is
-    the operating point -- and moving that crossing is what every slider in the
-    GUI is really doing.
+    the engine's full-throttle supply.  Where they cross is the operating point.
     """
     import matplotlib.pyplot as plt
 
@@ -331,7 +329,7 @@ def matching_figure(rpm: np.ndarray, prop_torque: np.ndarray, motor_torque: np.n
     fig, ax = plt.subplots(figsize=figsize, facecolor=t["surface"])
 
     for i, (name, y) in enumerate((("propeller demand", prop_torque),
-                                   ("motor supply", motor_torque))):
+                                   ("engine supply", engine_torque))):
         c = series_color(i, dark)
         ax.plot(rpm, y, color=c, linewidth=LINEWIDTH, label=name)
         _direct_label(ax, rpm[-1], y[-1], name, c, dx=0.01 * (rpm[-1] - rpm[0]))
@@ -347,7 +345,7 @@ def matching_figure(rpm: np.ndarray, prop_torque: np.ndarray, motor_torque: np.n
 
     ax.set_xlabel("shaft speed [rpm]")
     ax.set_ylabel("torque [N m]")
-    ax.set_title("Propeller / motor torque balance", fontsize=10, loc="left")
+    ax.set_title("Propeller / engine torque balance", fontsize=10, loc="left")
     ax.set_ylim(bottom=0.0)
     _legend(ax, dark, loc="upper left")
     style_axes(ax, dark)

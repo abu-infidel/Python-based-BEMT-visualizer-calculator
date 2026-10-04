@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "propwash"
-version = "0.1.0"
-description = "Blade-element-momentum propeller laboratory: 3-D visualiser, sizing, and optional GPU acceleration"
+version = "2.0.0"
+description = "Full-size aircraft propeller calculator: BEMT with piston-engine matching, sizing, structured text reports, a 3-D view and optional GPU acceleration"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 keywords = ["propeller", "BEMT", "aerodynamics", "CUDA", "visualisation", "colab"]
 classifiers = [

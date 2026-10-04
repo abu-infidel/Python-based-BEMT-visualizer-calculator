@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from propwash.accel import get_backend, list_backends
+from propwash.atmosphere import isa
 from propwash.accel._device_math import element_state, solve_phi
 from propwash.bemt.core import PHI_HI, PHI_LO, solve_batch, solve_stations
 from propwash.bemt.core import OperatingPoint
@@ -41,19 +42,19 @@ def test_device_math_reproduces_the_numpy_solver(stations, tables, options,
     This is the test that keeps the CPU and GPU paths from drifting: both
     Numba targets are compiled from exactly these function objects.
     """
-    reference = solve_stations(stations, OperatingPoint(rpm=8000.0, v_inf=6.0,
+    reference = solve_stations(stations, OperatingPoint(rpm=2300.0, v_inf=40.0,
                                                         air=sea_level),
                                options, tables)
     a0, da, n_alpha, cl_flat, cd_flat = _flat(tables)
-    thickness, re_ref, m_crit0, cl_max = stations.section_params()
-    omega = rpm_to_rad_s(8000.0)
+    thickness, re_ref, kappa, cl_max = stations.section_params()
+    omega = rpm_to_rad_s(2300.0)
 
     worst = 0.0
     for i in range(stations.n):
         phi, bracketed = solve_phi(
             stations.twist[i], stations.r[i], stations.chord[i], stations.solidity[i],
-            thickness[i], re_ref[i], m_crit0[i], cl_max[i], i * n_alpha, n_alpha, a0, da,
-            cl_flat, cd_flat, omega * stations.r[i], 6.0, sea_level.density,
+            thickness[i], re_ref[i], kappa[i], cl_max[i], i * n_alpha, n_alpha, a0, da,
+            cl_flat, cd_flat, omega * stations.r[i], 40.0, sea_level.density,
             sea_level.viscosity, sea_level.sound_speed, prop.radius, prop.hub_radius,
             prop.n_blades, options.flags(), options.n_bisect, PHI_LO, PHI_HI)
         assert bracketed == 1
@@ -64,19 +65,19 @@ def test_device_math_reproduces_the_numpy_solver(stations, tables, options,
 def test_element_state_residual_is_zero_at_the_solution(stations, tables, options,
                                                         sea_level, prop):
     a0, da, n_alpha, cl_flat, cd_flat = _flat(tables)
-    thickness, re_ref, m_crit0, cl_max = stations.section_params()
-    omega = rpm_to_rad_s(7000.0)
+    thickness, re_ref, kappa, cl_max = stations.section_params()
+    omega = rpm_to_rad_s(2300.0)
     i = stations.n // 2
 
     phi, _ = solve_phi(
         stations.twist[i], stations.r[i], stations.chord[i], stations.solidity[i],
-        thickness[i], re_ref[i], m_crit0[i], cl_max[i], i * n_alpha, n_alpha, a0, da,
+        thickness[i], re_ref[i], kappa[i], cl_max[i], i * n_alpha, n_alpha, a0, da,
         cl_flat, cd_flat, omega * stations.r[i], 0.0, sea_level.density,
         sea_level.viscosity, sea_level.sound_speed, prop.radius, prop.hub_radius,
         prop.n_blades, options.flags(), options.n_bisect, PHI_LO, PHI_HI)
     residual = element_state(
         phi, stations.twist[i], stations.r[i], stations.chord[i], stations.solidity[i],
-        thickness[i], re_ref[i], m_crit0[i], cl_max[i], i * n_alpha, n_alpha, a0, da,
+        thickness[i], re_ref[i], kappa[i], cl_max[i], i * n_alpha, n_alpha, a0, da,
         cl_flat, cd_flat, omega * stations.r[i], 0.0, sea_level.density,
         sea_level.viscosity, sea_level.sound_speed, prop.radius, prop.hub_radius,
         prop.n_blades, options.flags())[0]
@@ -127,8 +128,8 @@ def test_probe_never_raises():
                                   if i.available and i.name != "numpy"])
 def test_backend_matches_the_numpy_reference(name, stations, tables, options,
                                              sea_level):
-    rpm, v = np.meshgrid(np.linspace(2000.0, 12000.0, 9),
-                         np.linspace(0.0, 24.0, 7), indexing="ij")
+    rpm, v = np.meshgrid(np.linspace(800.0, 3000.0, 9),
+                         np.linspace(0.0, 80.0, 7), indexing="ij")
     reference = solve_batch(stations, rpm, v, sea_level, options, tables)
     out = get_backend(name).solve_batch(stations, rpm, v, sea_level, options, tables)
 
@@ -143,7 +144,8 @@ def test_backend_matches_the_numpy_reference(name, stations, tables, options,
 
 def test_benchmark_runs_and_cross_validates(prop):
     from propwash.accel.bench import benchmark
-    report = benchmark(prop, n_cases=64, n_elements=16, n_bisect=20, verbose=False)
+    report = benchmark(prop, isa(0.0), n_cases=64, n_elements=16, n_bisect=20,
+                       verbose=False)
     assert report.rows, "at least the NumPy reference should have run"
     assert report.rows[0].backend == "numpy"
     for row in report.rows[1:]:
@@ -161,11 +163,13 @@ CUDASIM_SCRIPT = textwrap.dedent("""
     sys.path.insert(0, %r)
     from propwash.accel.kernels import build_cuda_kernel, cuda_launch_config
     from propwash.bemt.core import solve_batch, SolverOptions, PHI_LO, PHI_HI
-    from propwash.geometry import get_preset
+    from propwash.geometry import full_size_blade
     from propwash.atmosphere import SEA_LEVEL as A
 
     NT = 8
-    g = get_preset("APC 10x5 (sport)")
+    g = full_size_blade(diameter=1.905, n_blades=2, activity_factor=109.0, hub_ratio=0.12,
+                        root_airfoil="clark_y", tip_airfoil="clark_y", thickness_root=0.20,
+                        thickness_tip=0.07, planform="standard", pitch=1.4478)
     st = g.discretize(6)
     opts = SolverOptions(n_bisect=14)
     ag, cl_t, cd_t = st.polar_tables()
@@ -174,8 +178,8 @@ CUDASIM_SCRIPT = textwrap.dedent("""
     cl_f = np.ascontiguousarray(cl_t).ravel()
     cd_f = np.ascontiguousarray(cd_t).ravel()
 
-    rpm = np.array([4000.0, 9000.0, 7000.0])
-    v = np.array([0.0, 12.0, 4.0])
+    rpm = np.array([1500.0, 2700.0, 2300.0])
+    v = np.array([0.0, 60.0, 30.0])
     nc, ns = rpm.size, st.n
 
     kern = build_cuda_kernel(nthreads=NT)
@@ -247,8 +251,8 @@ def test_torch_path_matches_the_reference_on_cpu(stations, tables, options, sea_
     pytest.importorskip("torch")
     from propwash.accel.torch_path import solve_batch_torch
 
-    rpm = np.linspace(2000.0, 12000.0, 24)
-    v = np.linspace(0.0, 25.0, 24)
+    rpm = np.linspace(800.0, 3000.0, 24)
+    v = np.linspace(0.0, 80.0, 24)
     out = solve_batch_torch(stations, rpm, v, sea_level, options, tables, True,
                             device="cpu")
     ref = solve_batch(stations, rpm, v, sea_level, options, tables)
@@ -308,8 +312,8 @@ def test_opencl_executes_and_matches_the_reference(stations, tables, options,
     if not available_devices():
         pytest.skip("no OpenCL platform on this machine")
 
-    rpm = np.linspace(2000.0, 12000.0, 32)
-    v = np.linspace(0.0, 25.0, 32)
+    rpm = np.linspace(800.0, 3000.0, 32)
+    v = np.linspace(0.0, 80.0, 32)
     ref = solve_batch(stations, rpm, v, sea_level, options, tables)
     out = solve_batch_opencl(stations, rpm, v, sea_level, options, tables, True)
 

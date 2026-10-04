@@ -83,7 +83,7 @@ def build_cpu_kernel(fastmath: bool = False):
     element_state = dev["element_state"]
 
     @njit(parallel=True, fastmath=fastmath, cache=False, nogil=True)
-    def kernel(r, chord, twist, sigma, thickness, re_ref, m_crit0, cl_max, dr,
+    def kernel(r, chord, twist, sigma, thickness, re_ref, kappa, cl_max, dr,
                cl_tab, cd_tab, omega, v_inf,
                thrust, torque, converged, phi_out, alpha_out, cl_out, cd_out,
                w_out, dt_out, dq_out, floss_out,
@@ -100,12 +100,12 @@ def build_cpu_kernel(fastmath: bool = False):
                 omega_r = omega[c] * r[s]
                 phi, brack = solve_phi(
                     twist[s], r[s], chord[s], sigma[s], thickness[s], re_ref[s],
-                    m_crit0[s], cl_max[s], base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
+                    kappa[s], cl_max[s], base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
                     omega_r, v_inf[c], rho, mu, a_sound, r_tip, r_hub, n_blades,
                     flags, n_bisect, phi_lo, phi_hi)
                 _, w, cl, cd, cn, ct, floss, alpha = element_state(
                     phi, twist[s], r[s], chord[s], sigma[s], thickness[s],
-                    re_ref[s], m_crit0[s], cl_max[s], base, n_alpha, alpha0, d_alpha,
+                    re_ref[s], kappa[s], cl_max[s], base, n_alpha, alpha0, d_alpha,
                     cl_tab, cd_tab, omega_r, v_inf[c], rho, mu, a_sound,
                     r_tip, r_hub, n_blades, flags)
 
@@ -163,7 +163,7 @@ def build_cuda_kernel(fastmath: bool = False, nthreads: int = THREADS_PER_BLOCK)
     nthreads = int(nthreads)
 
     @cuda.jit(fastmath=fastmath)
-    def kernel(r, chord, twist, sigma, thickness, re_ref, m_crit0, cl_max, dr,
+    def kernel(r, chord, twist, sigma, thickness, re_ref, kappa, cl_max, dr,
                cl_tab, cd_tab, omega, v_inf,
                thrust, torque, converged, phi_out, alpha_out, cl_out, cd_out,
                w_out, dt_out, dq_out, floss_out,
@@ -194,12 +194,12 @@ def build_cuda_kernel(fastmath: bool = False, nthreads: int = THREADS_PER_BLOCK)
             omega_r = om * r[s]
             phi, brack = solve_phi(
                 twist[s], r[s], chord[s], sigma[s], thickness[s], re_ref[s],
-                m_crit0[s], cl_max[s], base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
+                kappa[s], cl_max[s], base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
                 omega_r, vv, rho, mu, a_sound, r_tip, r_hub, n_blades,
                 flags, n_bisect, phi_lo, phi_hi)
             _, w, cl, cd, cn, ct, floss, alpha = element_state(
                 phi, twist[s], r[s], chord[s], sigma[s], thickness[s],
-                re_ref[s], m_crit0[s], cl_max[s], base, n_alpha, alpha0, d_alpha,
+                re_ref[s], kappa[s], cl_max[s], base, n_alpha, alpha0, d_alpha,
                 cl_tab, cd_tab, omega_r, vv, rho, mu, a_sound,
                 r_tip, r_hub, n_blades, flags)
 

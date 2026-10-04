@@ -24,3 +24,7 @@ exports/
 *.ptx
 *.cubin
 propwash_session.json
+
+# Reports and saved inputs written by the apps
+propwash_*.txt
+propwash_inputs_*.json

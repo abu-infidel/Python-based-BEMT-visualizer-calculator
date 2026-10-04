@@ -177,13 +177,13 @@ def _reshape(out: dict[str, np.ndarray], shape: tuple[int, ...], n_st: int) -> d
 def _kernel_arrays(stations: BladeStations, tables) -> dict[str, np.ndarray]:
     """Flat, contiguous, float64 arrays ready to be handed to a kernel."""
     alpha_grid, cl_tab, cd_tab = tables
-    thickness, re_ref, m_crit0, cl_max = stations.section_params()
+    thickness, re_ref, kappa, cl_max = stations.section_params()
     c = np.ascontiguousarray
     return {
         "r": c(stations.r, np.float64), "chord": c(stations.chord, np.float64),
         "twist": c(stations.twist, np.float64), "sigma": c(stations.solidity, np.float64),
         "thickness": c(thickness, np.float64), "re_ref": c(re_ref, np.float64),
-        "m_crit0": c(m_crit0, np.float64), "cl_max": c(cl_max, np.float64),
+        "kappa": c(kappa, np.float64), "cl_max": c(cl_max, np.float64),
         "dr": c(stations.dr, np.float64),
         "cl_tab": c(cl_tab, np.float64).ravel(), "cd_tab": c(cd_tab, np.float64).ravel(),
         "n_alpha": int(cl_tab.shape[1]), "alpha0": float(alpha_grid[0]),
@@ -240,7 +240,7 @@ class NumbaCPUBackend(Backend):
         span = [np.zeros(span_n) for _ in range(8)]
 
         kern(a["r"], a["chord"], a["twist"], a["sigma"], a["thickness"], a["re_ref"],
-             a["m_crit0"], a["cl_max"], a["dr"], a["cl_tab"], a["cd_tab"],
+             a["kappa"], a["cl_max"], a["dr"], a["cl_tab"], a["cd_tab"],
              rpm_to_rad_s(rpm), v_inf, thrust, torque, conv, *span,
              a["n_alpha"], a["alpha0"], a["d_alpha"], air.density, air.viscosity,
              air.sound_speed, stations.geometry.radius, stations.geometry.hub_radius,
@@ -287,7 +287,7 @@ class NumbaCUDABackend(Backend):
         if dev is None:
             dev = {k: cuda.to_device(a[k]) for k in
                    ("r", "chord", "twist", "sigma", "thickness", "re_ref",
-                    "m_crit0", "cl_max", "dr", "cl_tab", "cd_tab")}
+                    "kappa", "cl_max", "dr", "cl_tab", "cd_tab")}
             self._device_cache.clear()
             self._device_cache[key] = dev
 
@@ -302,7 +302,7 @@ class NumbaCUDABackend(Backend):
         blocks, threads = cuda_launch_config(n_cases, THREADS_PER_BLOCK)
         kern[blocks, threads](
             dev["r"], dev["chord"], dev["twist"], dev["sigma"], dev["thickness"],
-            dev["re_ref"], dev["m_crit0"], dev["cl_max"], dev["dr"],
+            dev["re_ref"], dev["kappa"], dev["cl_max"], dev["dr"],
             dev["cl_tab"], dev["cd_tab"],
             d_omega, d_v, d_t, d_q, d_c, *d_span,
             a["n_alpha"], a["alpha0"], a["d_alpha"], air.density, air.viscosity,
@@ -351,7 +351,7 @@ class CupyBackend(Backend):
         if dev is None:
             dev = {k: cp.asarray(a[k], dtype=cp.float64) for k in
                    ("r", "chord", "twist", "sigma", "thickness", "re_ref",
-                    "m_crit0", "cl_max", "dr", "cl_tab", "cd_tab")}
+                    "kappa", "cl_max", "dr", "cl_tab", "cd_tab")}
             self._device_cache.clear()
             self._device_cache[key] = dev
 
@@ -365,7 +365,7 @@ class CupyBackend(Backend):
 
         kern((n_cases,), (threads,), (
             dev["r"], dev["chord"], dev["twist"], dev["sigma"], dev["thickness"],
-            dev["re_ref"], dev["m_crit0"], dev["cl_max"], dev["dr"],
+            dev["re_ref"], dev["kappa"], dev["cl_max"], dev["dr"],
             dev["cl_tab"], dev["cd_tab"],
             d_omega, d_v, d_t, d_q, d_c, *d_span,
             np.int32(n_st), np.int32(a["n_alpha"]), np.int32(n_cases),

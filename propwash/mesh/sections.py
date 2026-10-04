@@ -1,7 +1,7 @@
 """Airfoil section coordinates for lofting the 3-D blade.
 
 The solver never needs section *shape* -- only its Cl/Cd behaviour -- but the
-visualiser does.  Rather than ship coordinate files for every preset, the
+visualiser does.  Rather than ship coordinate files for every section, the
 section is reconstructed from two numbers the polar already knows:
 
 * thickness comes straight from the blade's thickness distribution;

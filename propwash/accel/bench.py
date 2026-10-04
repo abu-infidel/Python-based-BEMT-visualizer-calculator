@@ -13,9 +13,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..atmosphere import SEA_LEVEL, AirState
+from ..atmosphere import AirState
 from ..bemt.core import SolverOptions
-from ..geometry import BladeGeometry, get_preset
+from ..geometry import BladeGeometry
 from .backend import get_backend, list_backends
 
 
@@ -62,8 +62,8 @@ class BenchReport:
         return head + body
 
 
-def benchmark(geometry: BladeGeometry | None = None, n_cases: int = 4096,
-              n_elements: int = 60, n_bisect: int = 60, air: AirState | None = None,
+def benchmark(geometry: BladeGeometry, air: AirState, n_cases: int = 4096,
+              n_elements: int = 60, n_bisect: int = 60,
               backends: list[str] | None = None, warmup: bool = True,
               verbose: bool = True) -> BenchReport:
     """Run every available backend over the same grid and compare.
@@ -71,15 +71,16 @@ def benchmark(geometry: BladeGeometry | None = None, n_cases: int = 4096,
     ``warmup`` runs each backend once on a small grid first, so JIT compilation
     and CUDA context creation are not counted as solve time.
     """
-    geometry = geometry or get_preset("APC 10x5 (sport)")
-    air = air or SEA_LEVEL
     opts = SolverOptions(n_elements=n_elements, n_bisect=n_bisect)
     stations = geometry.discretize(n_elements, opts.spacing)
     tables = stations.polar_tables(opts.n_alpha_table)
 
     side = max(int(np.sqrt(n_cases)), 2)
-    rpm_g, v_g = np.meshgrid(np.linspace(1500.0, 14000.0, side),
-                             np.linspace(0.0, 35.0, side), indexing="ij")
+    # From idle-ish to a helical tip Mach of about 0.9, and static to 120 m/s:
+    # the whole envelope a full-size propeller can see.
+    rpm_top = 0.9 * air.sound_speed / (np.pi * geometry.diameter) * 60.0
+    rpm_g, v_g = np.meshgrid(np.linspace(0.2 * rpm_top, rpm_top, side),
+                             np.linspace(0.0, 120.0, side), indexing="ij")
     n_total = rpm_g.size
 
     infos = {i.name: i for i in list_backends()}
@@ -131,11 +132,12 @@ def benchmark(geometry: BladeGeometry | None = None, n_cases: int = 4096,
     return report
 
 
-def sizing_sweep(sizes=(256, 1024, 4096, 16384, 65536), **kw) -> dict[str, list[float]]:
+def sizing_sweep(geometry: BladeGeometry, air: AirState,
+                 sizes=(256, 1024, 4096, 16384, 65536), **kw) -> dict[str, list[float]]:
     """Throughput against problem size -- where a GPU starts to pay for itself."""
     out: dict[str, list[float]] = {}
     for n in sizes:
-        rep = benchmark(n_cases=n, verbose=False, **kw)
+        rep = benchmark(geometry, air, n_cases=n, verbose=False, **kw)
         for row in rep.rows:
             out.setdefault(row.backend, []).append(row.cases_per_s)
     out["sizes"] = list(sizes)

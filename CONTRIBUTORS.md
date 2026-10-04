@@ -2,51 +2,54 @@
 
 ## Project owner
 
-**[@abu-infidel](https://github.com/abu-infidel)** — commissioned the project,
-set the requirements (a BEMT propeller visualiser with CUDA acceleration,
-targeting Google Colab), and directed its scope.
+**[@abu-infidel](https://github.com/abu-infidel)** commissioned the project,
+set the requirements and directed its scope. The requirements so far: a BEMT
+propeller visualiser and calculator for Google Colab; then full-size aircraft
+only, with no defaults, no input caps, structured report export and
+agreement with real-world data.
 
 ## Authorship
 
-**Claude (Opus 5), via [Claude Code](https://claude.ai/code)** — wrote the
-initial implementation in a single session: the BEMT solver and its residual
-formulation, the aerofoil and atmosphere models, the Numba CPU / Numba CUDA /
-raw CUDA C / PyTorch backends, the 3-D blade lofting, the Qt and ipywidgets
-GUIs, the CLI, the test suite and the documentation.
+**Claude, via [Claude Code](https://claude.ai/code)**, wrote the implementation
+under the project owner's direction. That covers the BEMT solver and its
+compute backends (NumPy, Numba CPU/CUDA, CUDA C/OpenCL C, PyTorch), the
+full-size section and engine models, the matching and sizing methods, the input
+validation and report format, both GUIs, the CLI, the tests and the
+documentation.
 
 To be clear about what that means: Claude is a language model, not a person. It
 does not hold copyright and cannot take responsibility for the code. Every
-commit it authored carries a `Co-Authored-By: Claude Opus 5` trailer and a link
-to the session that produced it, so the provenance of any line can be traced.
-The project owner is responsible for the repository.
+commit it authored carries a `Co-Authored-By` trailer and a link to the session
+that produced it, so the provenance of any line can be traced. The project
+owner is responsible for the repository.
 
 ## What was and was not verified
 
-Worth stating plainly, because AI-written code invites the question:
+Worth stating plainly, because AI-written code invites the question.
 
-**Checked by running it.** The ISA implementation against the published
-standard-atmosphere table; every compute backend diffed against the NumPy
-reference (agreement ~1e-14 relative); the OpenCL kernel *executed* on a POCL
-CPU device, not merely compiled; the CUDA kernel executed under
-`NUMBA_ENABLE_CUDASIM`; the raw CUDA C compiled to PTX by NVRTC for compute_75
-through compute_90; the PyTorch path forced onto CPU; the Adkins–Liebeck design
-cross-checked against the independent BEMT solver (1.4% on thrust); the Cessna
-172's trim speed against its published cruise figures; both GUIs driven
-headlessly and screenshotted; every notebook cell executed end to end. 220 tests
-pass.
+**Checked by running it.**
 
-**Not checked.** No GPU was available in the environment where this was
-written, so the CUDA backends have never executed on real hardware — only in
-simulation and compilation, and OpenCL only on a CPU device. Predictions were
-compared against *published* data, not against anything measured for this
-project. Static thrust for aircraft propellers is the weakest part of the model
-and is documented as such in `docs/PHYSICS.md`.
+- The model against published Cessna 172N data, with the calibrated quantities
+  named ([docs/VALIDATION.md](docs/VALIDATION.md)).
+- Every compute backend diffed against the NumPy reference. The OpenCL kernel
+  was executed on a POCL CPU device, the CUDA kernel under
+  `NUMBA_ENABLE_CUDASIM`, and the raw CUDA C compiled to PTX by NVRTC.
+- Extreme and invalid inputs swept, to check that no report contains a
+  non-finite number or a silent zero.
+- Both apps driven headlessly, and every notebook cell executed. The test
+  suite passes (`python -m pytest`).
 
-`docs/PHYSICS.md` lists the model's limits in full.
+**Not checked.**
+
+- No GPU was available where this was written. The CUDA backends have run only
+  in simulation and compilation, and OpenCL only on a CPU device.
+- The validation is against one aircraft's published figures, not against
+  measurements made for this project.
+- Climb and ceiling are over-predicted by 16–22% for that aircraft.
 
 ## Contributing
 
 Bug reports and pull requests are welcome. If you change the solver, run
-`python -m pytest` first — the backend cross-validation tests exist to catch
-exactly the kind of silent divergence that is easy to introduce between the CPU
-and GPU paths.
+`python -m pytest` first. The backend cross-validation and
+`propwash validate` exist to catch exactly the kind of silent divergence that is
+easy to introduce.

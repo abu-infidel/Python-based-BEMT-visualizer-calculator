@@ -1,210 +1,178 @@
-"""Piston aero-engine model, for aircraft propellers.
+"""Piston aero-engine model.
 
-:mod:`propwash.motor` answers "how fast does it spin?" for an electric drone.
-This module answers the same question for a light aircraft, and the answer has
-a different shape.
+The engine answers one question for the propeller: how much torque is there to
+turn it with, at this RPM and this altitude?  Every number that describes a
+particular engine is an input -- there are no preset engines.  The only fixed
+numbers are the *model* constants below, which describe how a typical
+certificated piston engine behaves rather than any one engine, and every report
+prints them.
 
-A brushless motor's torque falls linearly to zero at its no-load speed, so a
-propeller that is too fine simply spins up and stops there.  A normally
-aspirated piston engine has a torque curve that *peaks below* rated speed and
-droops only gently, so a fine propeller will happily drive it past redline --
-which is a real failure mode (an over-revving fixed-pitch prop), not a
-convergence problem, and is reported as such.
+Torque curve
+    Full-throttle crankshaft torque is a parabola in RPM that peaks at
+    :data:`PEAK_TORQUE_FRACTION` of rated speed and is :data:`TORQUE_DROOP`
+    lower again at rated speed, anchored so power at rated RPM equals rated
+    power.  Aircraft piston engines have flat torque curves, so this matters
+    little near rated RPM and is only a rough guide far below it.
 
-Two further differences matter:
+Altitude
+    A normally aspirated engine loses power faster than air density, because it
+    still pumps exhaust against an ambient pressure that falls more slowly.
+    The Gagg-Farrar relation ``P/P_SL = sigma - (1 - sigma)/7.55`` captures it.
+    A turbocharged (or turbonormalised) engine holds sea-level power up to its
+    critical altitude and lapses by the same relation above it, with sigma
+    taken relative to the density at the critical altitude.
 
-* **Altitude.** An unsupercharged engine loses power faster than density alone
-  suggests, because it still has to pump exhaust against a pressure that falls
-  more slowly than intake density.  The Gagg-Farrar relation,
-  ``P/P_SL = sigma - (1 - sigma)/7.55``, captures it in one term.
-* **Gearing.** Direct-drive engines (Lycoming, Continental) turn the propeller
-  at crankshaft speed, so propeller tip Mach is what limits RPM.  High-revving
-  engines (Rotax) need a reduction gearbox, and the propeller then sees
-  crankshaft speed divided by the gear ratio.
-
-The interface deliberately mirrors :class:`~propwash.motor.MotorSpec`
-(``shaft_torque``, ``shaft_power``, ``no_load_rpm``) so the same
-:func:`~propwash.motor.match_rpm` bisection drives both.
+RPM limit
+    Rated RPM is also the RPM limit (true of the certificated direct-drive
+    engines this is built for).  A propeller that would drive the engine past
+    it at full throttle is reported as RPM-limited, with the throttle needed to
+    hold the limit -- never silently clipped.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import math
+from dataclasses import asdict, dataclass
 
 import numpy as np
 
-from .atmosphere import RHO0, AirState
+from .atmosphere import RHO0, AirState, isa
 from .units import HORSEPOWER, rpm_to_rad_s
 
-#: Avgas density, kg/L, for turning a mass flow into something a pilot reads.
-AVGAS_DENSITY = 0.72
+#: Crankshaft RPM of peak full-throttle torque, as a fraction of rated RPM.
+PEAK_TORQUE_FRACTION = 0.78
+#: Fractional torque lost between the torque peak and rated RPM.
+TORQUE_DROOP = 0.08
+#: Gagg-Farrar altitude-lapse constant.
+GAGG_FARRAR = 7.55
+#: Lowest crankshaft speed, as a fraction of rated, the matching will consider
+#: a running engine.  A propeller that holds the engine below this at full
+#: throttle is reported as too coarse rather than given a made-up answer.
+MIN_RUNNING_FRACTION = 0.25
 
-#: Brake specific fuel consumption, kg/(W s).  0.50 lb/(hp hr) is typical of a
-#: normally aspirated Lycoming at cruise power.
-DEFAULT_BSFC = 0.50 * 0.45359237 / (HORSEPOWER * 3600.0)
+#: Model constants, printed in every report so a result can be reproduced.
+MODEL_CONSTANTS = {
+    "peak_torque_fraction": PEAK_TORQUE_FRACTION,
+    "torque_droop": TORQUE_DROOP,
+    "gagg_farrar_constant": GAGG_FARRAR,
+    "min_running_fraction": MIN_RUNNING_FRACTION,
+}
+
+ASPIRATIONS = ("normal", "turbocharged")
+
+#: lb/(hp h) -> kg/J
+BSFC_US_TO_SI = 0.45359237 / (HORSEPOWER * 3600.0)
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class PistonEngine:
-    """A normally aspirated four-stroke aero engine.
+    """A piston aero engine, described entirely by its inputs.
 
-    ``rated_power`` is in watts at sea level; the presets are built from the
-    horsepower figures on the type certificate.
+    ``rated_power`` is watts at sea level (at or below the critical altitude
+    for a turbocharged engine).  ``rated_rpm`` is crankshaft RPM and is also
+    the RPM limit.  ``gear_ratio`` is crankshaft revolutions per propeller
+    revolution (1 for direct drive).  ``bsfc`` (kg/J) is optional: without it
+    the fuel-flow outputs are reported as not available.
     """
 
-    name: str = "Lycoming O-320-D2J"
-    rated_power: float = 160.0 * HORSEPOWER   # W, sea level
-    rated_rpm: float = 2700.0                 # crankshaft
-    idle_rpm: float = 600.0
-    redline_rpm: float = 2700.0
-    peak_torque_frac: float = 0.78            # N at peak torque / N rated
-    torque_droop: float = 0.08                # torque lost between peak and rated
-    gear_ratio: float = 1.0                   # crank rev per propeller rev
-    bsfc: float = DEFAULT_BSFC
-    displacement_l: float = 5.24
-    cylinders: int = 4
-    supercharged: bool = False
+    rated_power: float
+    rated_rpm: float
+    gear_ratio: float
+    aspiration: str
+    critical_altitude: float | None = None    # m, turbocharged only
+    bsfc: float | None = None                  # kg/J
+    name: str = ""
 
-    # -- basic quantities --------------------------------------------------
+    def __post_init__(self) -> None:
+        if not (math.isfinite(self.rated_power) and self.rated_power > 0.0):
+            raise ValueError("rated power must be a positive number")
+        if not (math.isfinite(self.rated_rpm) and self.rated_rpm > 0.0):
+            raise ValueError("rated RPM must be a positive number")
+        if not (math.isfinite(self.gear_ratio) and self.gear_ratio > 0.0):
+            raise ValueError("gear ratio must be a positive number")
+        if self.aspiration not in ASPIRATIONS:
+            raise ValueError(f"aspiration must be one of {ASPIRATIONS}")
+        if self.aspiration == "turbocharged":
+            if self.critical_altitude is None or not math.isfinite(self.critical_altitude):
+                raise ValueError("a turbocharged engine needs its critical altitude")
+        if self.bsfc is not None and not (math.isfinite(self.bsfc) and self.bsfc > 0.0):
+            raise ValueError("BSFC must be a positive number when given")
+
+    # -- speeds ------------------------------------------------------------
     @property
     def rated_power_hp(self) -> float:
         return self.rated_power / HORSEPOWER
 
     @property
-    def peak_torque(self) -> float:
-        """Crankshaft torque at the top of the torque curve (N m).
-
-        Anchored so that power at rated RPM comes out equal to ``rated_power``.
-        """
-        omega_rated = rpm_to_rad_s(self.rated_rpm)
-        return self.rated_power / max((1.0 - self.torque_droop) * omega_rated, 1e-9)
-
-    def prop_rpm(self, crank_rpm) -> np.ndarray:
-        """Propeller speed for a given crankshaft speed."""
-        return np.asarray(crank_rpm, dtype=float) / self.gear_ratio
-
-    def crank_rpm(self, prop_rpm) -> np.ndarray:
-        """Crankshaft speed for a given propeller speed."""
-        return np.asarray(prop_rpm, dtype=float) * self.gear_ratio
-
-    # -- the curves --------------------------------------------------------
-    def altitude_factor(self, air: AirState | None = None) -> float:
-        """Gagg-Farrar power lapse with density ratio.
-
-        At 8,000 ft (sigma = 0.79) this gives 0.76 of sea-level power, against
-        0.79 for density alone -- the few percent that makes a normally
-        aspirated aircraft feel tired before the numbers say it should.
-        """
-        if air is None or self.supercharged:
-            return 1.0
-        sigma = air.density / RHO0
-        return float(np.clip(sigma - (1.0 - sigma) / 7.55, 0.0, 1.2))
-
-    def crank_torque(self, crank_rpm, throttle: float = 1.0,
-                     air: AirState | None = None) -> np.ndarray:
-        """Crankshaft torque (N m).
-
-        A parabola in RPM peaking at ``peak_torque_frac`` of rated speed.  Below
-        idle the engine cannot sustain itself, so torque is zero -- which also
-        keeps the propeller-matching bisection well behaved.
-        """
-        n = np.asarray(crank_rpm, dtype=float) / max(self.rated_rpm, 1e-9)
-        p = self.peak_torque_frac
-        span = max(1.0 - p, 1e-3)
-
-        shape = 1.0 - self.torque_droop * ((n - p) / span) ** 2
-        torque = self.peak_torque * np.clip(shape, 0.0, None)
-
-        torque = torque * float(np.clip(throttle, 0.0, 1.0)) * self.altitude_factor(air)
-        return np.where(np.asarray(crank_rpm, dtype=float) < self.idle_rpm, 0.0, torque)
-
-    # -- the MotorSpec-compatible interface (propeller shaft) --------------
-    def shaft_torque(self, rpm, throttle: float = 1.0,
-                     air: AirState | None = None) -> np.ndarray:
-        """Torque delivered to the *propeller* (N m), after any reduction gear."""
-        return self.crank_torque(self.crank_rpm(rpm), throttle, air) * self.gear_ratio
-
-    def shaft_power(self, rpm, throttle: float = 1.0,
-                    air: AirState | None = None) -> np.ndarray:
-        return self.shaft_torque(rpm, throttle, air) * rpm_to_rad_s(
-            np.asarray(rpm, dtype=float))
-
-    def no_load_rpm(self, throttle: float = 1.0) -> float:
-        """Upper bracket for propeller matching: propeller RPM at redline.
-
-        A piston engine has no true no-load speed -- it would destroy itself
-        first.  Redline is the honest ceiling, and a propeller that does not
-        load the engine down to it is over-revving.
-        """
-        return self.redline_rpm / self.gear_ratio
+    def max_prop_rpm(self) -> float:
+        """Propeller RPM at the engine's RPM limit."""
+        return self.rated_rpm / self.gear_ratio
 
     @property
-    def max_current(self) -> float:      # pragma: no cover - interface parity
-        """Present for interface parity with MotorSpec; not meaningful here."""
-        return float("inf")
+    def min_prop_rpm(self) -> float:
+        """Lowest propeller RPM the matching treats as a running engine."""
+        return MIN_RUNNING_FRACTION * self.rated_rpm / self.gear_ratio
+
+    def prop_rpm(self, engine_rpm):
+        return np.asarray(engine_rpm, dtype=float) / self.gear_ratio
+
+    def engine_rpm(self, prop_rpm):
+        return np.asarray(prop_rpm, dtype=float) * self.gear_ratio
+
+    # -- altitude ----------------------------------------------------------
+    def altitude_factor(self, air: AirState) -> float:
+        """Full-throttle power at this air state over rated power."""
+        if self.aspiration == "turbocharged":
+            rho_ref = isa(self.critical_altitude).density
+            if air.density >= rho_ref:
+                return 1.0
+        else:
+            rho_ref = RHO0
+        sigma = air.density / rho_ref
+        return float(max(sigma - (1.0 - sigma) / GAGG_FARRAR, 0.0))
+
+    # -- curves (propeller shaft) ------------------------------------------
+    def _shape(self, engine_rpm) -> np.ndarray:
+        n = np.asarray(engine_rpm, dtype=float) / self.rated_rpm
+        span = 1.0 - PEAK_TORQUE_FRACTION
+        return np.clip(1.0 - TORQUE_DROOP * ((n - PEAK_TORQUE_FRACTION) / span) ** 2,
+                       0.0, None)
+
+    @property
+    def peak_torque(self) -> float:
+        """Sea-level full-throttle crankshaft torque at the torque peak (N m)."""
+        return self.rated_power / ((1.0 - TORQUE_DROOP) * rpm_to_rad_s(self.rated_rpm))
+
+    def full_throttle_torque(self, prop_rpm, air: AirState) -> np.ndarray:
+        """Torque available at the propeller shaft at full throttle (N m)."""
+        crank = self.engine_rpm(prop_rpm)
+        return (self.peak_torque * self._shape(crank) * self.altitude_factor(air)
+                * self.gear_ratio)
+
+    def full_throttle_power(self, prop_rpm, air: AirState) -> np.ndarray:
+        """Shaft power available at full throttle (W)."""
+        return self.full_throttle_torque(prop_rpm, air) * rpm_to_rad_s(
+            np.asarray(prop_rpm, dtype=float))
 
     # -- consumption -------------------------------------------------------
-    def fuel_flow(self, rpm, throttle: float = 1.0,
-                  air: AirState | None = None) -> np.ndarray:
-        """Fuel mass flow, kg/s."""
-        return self.bsfc * np.maximum(self.shaft_power(rpm, throttle, air), 0.0)
-
-    def fuel_flow_lph(self, rpm, throttle: float = 1.0,
-                      air: AirState | None = None) -> np.ndarray:
-        """Fuel flow in litres per hour -- what the gauge shows."""
-        return self.fuel_flow(rpm, throttle, air) * 3600.0 / AVGAS_DENSITY
-
-    def fuel_flow_gph(self, rpm, throttle: float = 1.0,
-                      air: AirState | None = None) -> np.ndarray:
-        return self.fuel_flow_lph(rpm, throttle, air) / 3.785411784
-
-    def power_fraction(self, rpm, throttle: float = 1.0,
-                       air: AirState | None = None) -> np.ndarray:
-        """Percentage of rated power -- the number a pilot sets cruise by."""
-        return self.shaft_power(rpm, throttle, air) / max(self.rated_power, 1e-9)
-
-    # -- helpers -----------------------------------------------------------
-    def with_power(self, horsepower: float) -> "PistonEngine":
-        return replace(self, rated_power=horsepower * HORSEPOWER)
+    def fuel_flow(self, shaft_power: float) -> float | None:
+        """Fuel mass flow (kg/s) at a shaft power, or None without a BSFC."""
+        if self.bsfc is None or shaft_power is None:
+            return None
+        return self.bsfc * max(float(shaft_power), 0.0)
 
     def describe(self) -> str:
-        gear = "" if abs(self.gear_ratio - 1.0) < 1e-6 else f", {self.gear_ratio:.2f}:1 gearbox"
-        return (f"{self.name}: {self.rated_power_hp:.0f} hp @ {self.rated_rpm:.0f} rpm, "
-                f"{self.cylinders} cyl, {self.displacement_l:.2f} L{gear}, "
-                f"prop redline {self.no_load_rpm():.0f} rpm")
+        gear = "direct drive" if abs(self.gear_ratio - 1.0) < 1e-9 else \
+            f"{self.gear_ratio:.3f}:1 reduction"
+        turbo = (f", turbocharged to {self.critical_altitude / 0.3048:,.0f} ft"
+                 if self.aspiration == "turbocharged" else ", normally aspirated")
+        return (f"{self.name + ': ' if self.name else ''}{self.rated_power_hp:.0f} hp "
+                f"@ {self.rated_rpm:.0f} rpm, {gear}{turbo}")
+
+    def to_dict(self) -> dict:
+        return asdict(self)
 
 
-ENGINE_PRESETS: dict[str, PistonEngine] = {
-    e.name: e for e in (
-        PistonEngine("Lycoming O-320-D2J (C172N/P)", 160.0 * HORSEPOWER, 2700.0,
-                     redline_rpm=2700.0, displacement_l=5.24, cylinders=4),
-        PistonEngine("Lycoming IO-360-L2A (C172S)", 180.0 * HORSEPOWER, 2700.0,
-                     redline_rpm=2700.0, displacement_l=5.92, cylinders=4),
-        PistonEngine("Continental O-200-A (C150)", 100.0 * HORSEPOWER, 2750.0,
-                     redline_rpm=2750.0, displacement_l=3.29, cylinders=4),
-        PistonEngine("Lycoming IO-540-K (PA-32)", 300.0 * HORSEPOWER, 2700.0,
-                     redline_rpm=2700.0, displacement_l=8.85, cylinders=6),
-        PistonEngine("Rotax 912ULS (LSA)", 100.0 * HORSEPOWER, 5800.0,
-                     idle_rpm=1400.0, redline_rpm=5800.0, gear_ratio=2.43,
-                     displacement_l=1.35, cylinders=4, peak_torque_frac=0.88,
-                     torque_droop=0.06, bsfc=0.46 * 0.45359237 / (HORSEPOWER * 3600.0)),
-        PistonEngine("Continental O-470-R (C182)", 230.0 * HORSEPOWER, 2600.0,
-                     redline_rpm=2600.0, displacement_l=7.70, cylinders=6),
-    )
-}
-
-DEFAULT_ENGINE = "Lycoming O-320-D2J (C172N/P)"
-
-
-def get_engine(name: str) -> PistonEngine:
-    if name not in ENGINE_PRESETS:
-        raise KeyError(f"unknown engine {name!r}; have {list(ENGINE_PRESETS)}")
-    return replace(ENGINE_PRESETS[name])
-
-
-def list_engines() -> list[str]:
-    return list(ENGINE_PRESETS)
-
-
-__all__ = ["PistonEngine", "ENGINE_PRESETS", "DEFAULT_ENGINE", "get_engine",
-           "list_engines", "AVGAS_DENSITY", "DEFAULT_BSFC"]
+__all__ = ["PistonEngine", "ASPIRATIONS", "MODEL_CONSTANTS", "BSFC_US_TO_SI",
+           "PEAK_TORQUE_FRACTION", "TORQUE_DROOP", "GAGG_FARRAR",
+           "MIN_RUNNING_FRACTION"]

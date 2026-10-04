@@ -57,8 +57,6 @@ FLAG_TIP_LOSS = 1 << 0
 FLAG_HUB_LOSS = 1 << 1
 FLAG_REYNOLDS = 1 << 2
 FLAG_MACH = 1 << 3
-FLAG_STALL_DELAY = 1 << 4
-FLAG_SWIRL = 1 << 5
 
 PHI_LO = 1.0e-6
 PHI_HI = math.pi / 2.0 - 1.0e-6
@@ -81,8 +79,6 @@ class SolverOptions:
     hub_loss: bool = True
     reynolds_correction: bool = True
     mach_correction: bool = True
-    stall_delay: bool = False
-    swirl_in_thrust: bool = True  # include the swirl-recovery term in power
 
     def flags(self) -> int:
         f = 0
@@ -90,8 +86,6 @@ class SolverOptions:
         f |= FLAG_HUB_LOSS if self.hub_loss else 0
         f |= FLAG_REYNOLDS if self.reynolds_correction else 0
         f |= FLAG_MACH if self.mach_correction else 0
-        f |= FLAG_STALL_DELAY if self.stall_delay else 0
-        f |= FLAG_SWIRL if self.swirl_in_thrust else 0
         return f
 
 
@@ -99,9 +93,9 @@ class SolverOptions:
 class OperatingPoint:
     """Where the propeller is being asked to work."""
 
-    rpm: float = 6000.0
-    v_inf: float = 0.0            # m/s, axial freestream
-    air: AirState = field(default_factory=lambda: SEA_LEVEL)
+    rpm: float                    # propeller RPM
+    v_inf: float                  # m/s, axial freestream
+    air: AirState
 
     @property
     def omega(self) -> float:
@@ -176,29 +170,49 @@ def mach_lift_ceiling(mach, cl_max):
     return np.asarray(cl_max, dtype=float) * np.maximum(1.0 - 0.9 * excess ** 1.5, 0.35)
 
 
+#: Lock's offset between critical and drag-divergence Mach, (0.1/80)^(1/3).
+#: Drag divergence is *defined* as dCd/dM = 0.1; with Cd_wave = 20 (M - M_cr)^4
+#: that slope is reached 0.1077 above M_cr.  Using M_dd in place of M_cr --
+#: an easy slip -- delays the onset of wave drag by a full tenth in Mach.
+LOCK_OFFSET = 0.1077
+
+
 def _corrected_coeffs(cl: np.ndarray, cd: np.ndarray, w: np.ndarray, chord: np.ndarray,
                       rho: float, mu: float, a_sound: float,
-                      thickness: np.ndarray, re_ref: np.ndarray, m_crit0: np.ndarray,
+                      thickness: np.ndarray, re_ref: np.ndarray, kappa: np.ndarray,
                       cl_max: np.ndarray, flags: int) -> tuple[np.ndarray, np.ndarray]:
-    """Apply Reynolds and compressibility scaling to raw table values."""
+    """Full-size Reynolds and compressibility corrections on raw table values.
+
+    The section tables are baked at full-scale Reynolds number (``re_ref``,
+    about 3 million), so these are *small* adjustments around that point:
+
+    * **Reynolds** scales profile drag as Re^-0.2 (turbulent skin friction)
+      within [0.75, 1.6], and moves the stall ceiling by at most +5/-15%.  It
+      deliberately does **not** scale the lift curve: Reynolds number changes
+      where a section stalls and how much drag it makes, not its lift slope.
+    * **Compressibility** applies Prandtl-Glauert to the lift slope, caps lift
+      at a Mach-degraded ceiling (maximum lift falls with Mach), and adds wave
+      drag by the Korn equation with Lock's fourth-power rise.
+    """
+    re_cl = 1.0
     if flags & FLAG_REYNOLDS:
-        re = np.maximum(rho * w * chord / mu, 1.0e3)
-        re_scale = (re_ref / re) ** 0.2 * (1.0 + 0.45 * np.maximum(2.0e4 / re - 1.0, 0.0))
-        cd = cd * np.clip(re_scale, 0.5, 4.0)
-        cl = cl * np.clip(1.0 - 0.14 * np.log10(np.maximum(re_ref / re, 1e-12)), 0.45, 1.12)
+        re = np.maximum(rho * w * chord / mu, 1.0e4)
+        cd = cd * np.clip((re_ref / re) ** 0.2, 0.75, 1.6)
+        re_cl = np.clip(1.0 + 0.06 * np.log10(re / re_ref), 0.85, 1.05)
 
     if flags & FLAG_MACH:
-        m = np.clip(w / a_sound, 0.0, 0.92)
-        cl = cl / np.sqrt(np.maximum(1.0 - m * m, 1.0e-3))
-        # Prandtl-Glauert amplifies the lift *slope*; maximum lift falls with
-        # Mach rather than rising, so the amplified value is bounded by a
-        # Mach-degraded ceiling.  Without this a transonic propeller tip is
-        # handed a Cl it could never physically reach -- which is exactly the
-        # regime a light-aircraft propeller lives in at redline.
-        ceiling = mach_lift_ceiling(m, cl_max)
+        m = np.maximum(w / a_sound, 0.0)
+        m_pg = np.minimum(m, 0.92)
+        cl = cl / np.sqrt(np.maximum(1.0 - m_pg * m_pg, 1.0e-3))
+        ceiling = mach_lift_ceiling(m_pg, cl_max) * re_cl
         cl = np.clip(cl, -ceiling, ceiling)
-        m_dd = m_crit0 - 0.1 * np.abs(cl) - thickness
-        cd = cd + 20.0 * np.maximum(m - m_dd, 0.0) ** 4
+        # Korn: M_dd = kappa - t/c - Cl/10 for an unswept section; Lock's rise
+        # starts at the critical Mach, LOCK_OFFSET below that.
+        m_cr = kappa - 0.1 * np.abs(cl) - thickness - LOCK_OFFSET
+        cd = cd + 20.0 * np.maximum(np.minimum(m, 1.2) - m_cr, 0.0) ** 4
+    else:
+        ceiling = cl_max * re_cl
+        cl = np.clip(cl, -ceiling, ceiling)
 
     return cl, np.maximum(cd, 1.0e-5)
 
@@ -222,7 +236,7 @@ def residual_phi(phi: np.ndarray, ctx: "_ElementContext") -> np.ndarray:
     w_guess = np.maximum(np.abs(w_guess), np.maximum(np.abs(ctx.v_inf), 1e-3))
 
     cl, cd = _corrected_coeffs(cl0, cd0, w_guess, ctx.chord, ctx.rho, ctx.mu,
-                               ctx.a_sound, ctx.thickness, ctx.re_ref, ctx.m_crit0,
+                               ctx.a_sound, ctx.thickness, ctx.re_ref, ctx.kappa,
                                ctx.cl_max, ctx.flags)
 
     cn = cl * cos_p - cd * sin_p
@@ -242,7 +256,7 @@ class _ElementContext:
     sigma: np.ndarray
     thickness: np.ndarray
     re_ref: np.ndarray
-    m_crit0: np.ndarray
+    kappa: np.ndarray
     cl_max: np.ndarray
     idx: np.ndarray
     alpha0: float
@@ -346,11 +360,11 @@ def solve_stations(stations: BladeStations, op: OperatingPoint,
     flags = opts.flags()
 
     alpha_grid, cl_tab, cd_tab = tables if tables is not None else stations.polar_tables(opts.n_alpha_table)
-    thickness, re_ref, m_crit0, cl_max = stations.section_params()
+    thickness, re_ref, kappa, cl_max = stations.section_params()
 
     ctx = _ElementContext(
         r=stations.r, chord=stations.chord, twist=stations.twist,
-        sigma=stations.solidity, thickness=thickness, re_ref=re_ref, m_crit0=m_crit0,
+        sigma=stations.solidity, thickness=thickness, re_ref=re_ref, kappa=kappa,
         cl_max=cl_max, idx=np.arange(stations.n), alpha0=float(alpha_grid[0]),
         d_alpha=float(alpha_grid[1] - alpha_grid[0]),
         cl_tab=cl_tab, cd_tab=cd_tab,
@@ -402,7 +416,7 @@ def _assemble(phi: np.ndarray, converged: np.ndarray, ctx: _ElementContext,
     w = np.maximum(np.abs(w), np.maximum(np.abs(ctx.v_inf), 1e-3))
 
     cl, cd = _corrected_coeffs(cl0, cd0, w, ctx.chord, ctx.rho, ctx.mu, ctx.a_sound,
-                               ctx.thickness, ctx.re_ref, ctx.m_crit0, ctx.cl_max,
+                               ctx.thickness, ctx.re_ref, ctx.kappa, ctx.cl_max,
                                ctx.flags)
     cn = cl * cos_p - cd * sin_p
     ct = cl * sin_p + cd * cos_p
@@ -479,7 +493,7 @@ __all__ = [
     "SolverOptions", "OperatingPoint", "BEMTResult", "solve_stations",
     "mach_lift_ceiling",
     "residual_phi", "prandtl_loss", "FLAG_TIP_LOSS", "FLAG_HUB_LOSS",
-    "FLAG_REYNOLDS", "FLAG_MACH", "FLAG_STALL_DELAY", "FLAG_SWIRL",
+    "FLAG_REYNOLDS", "FLAG_MACH", "LOCK_OFFSET",
     "PHI_LO", "PHI_HI", "rad_s_to_rpm",
 ]
 
@@ -490,19 +504,26 @@ __all__ = [
 
 def _batch_context(stations: BladeStations, omega: np.ndarray, v_inf: np.ndarray,
                    air: AirState, flags: int,
-                   tables: tuple[np.ndarray, np.ndarray, np.ndarray]) -> _ElementContext:
-    """Broadcast a blade and a list of operating points to shape (cases, stations)."""
+                   tables: tuple[np.ndarray, np.ndarray, np.ndarray],
+                   delta_pitch: np.ndarray | None = None) -> _ElementContext:
+    """Broadcast a blade and a list of operating points to shape (cases, stations).
+
+    ``delta_pitch`` (rad, one per case) rotates every section of that case by a
+    collective angle, which is how a constant-speed hub is solved for its blade
+    angle at many flight speeds in one pass.
+    """
     alpha_grid, cl_tab, cd_tab = tables
-    thickness, re_ref, m_crit0, cl_max = stations.section_params()
+    thickness, re_ref, kappa, cl_max = stations.section_params()
     geom = stations.geometry
 
     col = lambda a: np.asarray(a, dtype=float).reshape(-1, 1)   # noqa: E731
     row = lambda a: np.asarray(a, dtype=float).reshape(1, -1)   # noqa: E731
 
     return _ElementContext(
-        r=row(stations.r), chord=row(stations.chord), twist=row(stations.twist),
+        r=row(stations.r), chord=row(stations.chord),
+        twist=row(stations.twist) + (0.0 if delta_pitch is None else col(delta_pitch)),
         sigma=row(stations.solidity), thickness=row(thickness), re_ref=row(re_ref),
-        m_crit0=row(m_crit0), cl_max=row(cl_max),
+        kappa=row(kappa), cl_max=row(cl_max),
         idx=np.broadcast_to(np.arange(stations.n).reshape(1, -1),
                             (col(omega).shape[0], stations.n)),
         alpha0=float(alpha_grid[0]), d_alpha=float(alpha_grid[1] - alpha_grid[0]),
@@ -515,7 +536,8 @@ def _batch_context(stations: BladeStations, omega: np.ndarray, v_inf: np.ndarray
 
 def solve_batch(stations: BladeStations, rpm: np.ndarray, v_inf: np.ndarray,
                 air: AirState | None = None, opts: SolverOptions | None = None,
-                tables: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None) -> dict[str, np.ndarray]:
+                tables: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+                delta_pitch: np.ndarray | None = None) -> dict[str, np.ndarray]:
     """Solve ``n`` operating points in one vectorised pass.
 
     ``rpm`` and ``v_inf`` are broadcast against each other, so a 40x40 pitch/RPM
@@ -528,14 +550,16 @@ def solve_batch(stations: BladeStations, rpm: np.ndarray, v_inf: np.ndarray,
     flags = opts.flags()
     tables = tables if tables is not None else stations.polar_tables(opts.n_alpha_table)
 
-    rpm_b, v_b = np.broadcast_arrays(np.asarray(rpm, dtype=float),
-                                     np.asarray(v_inf, dtype=float))
+    rpm_b, v_b, dp_b = np.broadcast_arrays(
+        np.asarray(rpm, dtype=float), np.asarray(v_inf, dtype=float),
+        np.asarray(0.0 if delta_pitch is None else delta_pitch, dtype=float))
     shape = rpm_b.shape
     rpm_f = rpm_b.ravel()
     v_f = v_b.ravel()
     omega = rpm_to_rad_s(rpm_f)
 
-    ctx = _batch_context(stations, omega, v_f, air, flags, tables)
+    ctx = _batch_context(stations, omega, v_f, air, flags, tables,
+                         None if delta_pitch is None else dp_b.ravel())
     n_cases = rpm_f.size
 
     lo = np.full((n_cases, stations.n), PHI_LO)
@@ -582,7 +606,7 @@ def integrate_batch(phi: np.ndarray, converged: np.ndarray, ctx: _ElementContext
     w = np.maximum(np.abs(w), np.maximum(np.abs(ctx.v_inf), 1e-3))
 
     cl, cd = _corrected_coeffs(cl0, cd0, w, ctx.chord, ctx.rho, ctx.mu, ctx.a_sound,
-                               ctx.thickness, ctx.re_ref, ctx.m_crit0, ctx.cl_max,
+                               ctx.thickness, ctx.re_ref, ctx.kappa, ctx.cl_max,
                                ctx.flags)
     cn = cl * cos_p - cd * sin_p
     ct = cl * sin_p + cd * cos_p

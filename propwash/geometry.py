@@ -1,25 +1,26 @@
-"""Blade planform: chord, twist, thickness and section distributions.
+"""Full-size propeller blade geometry: chord, twist, thickness and sections.
 
 A propeller blade is described here as a set of *distributions* over the
 non-dimensional radius ``x = r / R``.  Each distribution is a small serialisable
-spec (kind + parameters) rather than a raw array, so the GUI can expose a
-handful of sliders, presets round-trip through JSON, and the 3-D mesher and the
-solver read the exact same geometry.
+spec (kind + parameters) rather than a raw array, so a blade round-trips
+through JSON and the 3-D mesher and the solver read the exact same geometry.
+There are no preset blades: :func:`full_size_blade` builds one from the
+numbers a propeller is specified by.
 """
 
 from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Literal, Sequence
+from typing import Any, Literal
 
 import numpy as np
 
 from .airfoil import (DEG, AnalyticPolar, blended_polar, get_airfoil,
-                      stack_tables)
-from .units import INCH, inch_pitch_to_twist
+                      list_airfoils, stack_tables)
+from .units import INCH
 
 DistKind = Literal["constant", "linear", "elliptic", "inverse", "betz", "spline", "parabolic"]
 
@@ -128,30 +129,46 @@ def _pchip(x: np.ndarray, y: np.ndarray, xi: np.ndarray) -> np.ndarray:
 # Blade
 # ---------------------------------------------------------------------------
 
+#: Lower limit of the standard activity-factor integral (r/R = 0.15).
+AF_LOWER = 0.15
+
+
 @dataclass(slots=True)
 class BladeGeometry:
     """Full parametric description of one propeller.
 
-    Lengths are metres and angles radians.  ``pitch_offset`` is the collective
-    the user actually drives -- it rigidly rotates every section, exactly like a
-    variable-pitch hub.
+    Lengths are metres and angles radians.  Every field that describes the
+    propeller is required -- there is no default blade.  ``pitch_offset`` is the
+    collective a constant-speed hub (or the GUI) applies on top of the built-in
+    twist; it rigidly rotates every section.
+
+    Use :func:`full_size_blade` to build one from the numbers a propeller is
+    normally specified by (diameter, blades, activity factor, pitch).
     """
 
-    name: str = "Custom prop"
-    n_blades: int = 2
-    radius: float = 0.127                 # m (a 10-inch prop)
-    hub_radius_frac: float = 0.15         # r_hub / R
-    chord: Distribution = field(default_factory=lambda: Distribution("elliptic", root=0.105, tip=0.008))
-    twist: Distribution = field(default_factory=lambda: Distribution("inverse", root=0.35, tip=0.0))
-    thickness: Distribution = field(default_factory=lambda: Distribution("linear", root=0.16, tip=0.08))
-    sweep: Distribution = field(default_factory=lambda: Distribution("constant", root=0.0))
-    dihedral: Distribution = field(default_factory=lambda: Distribution("constant", root=0.0))
+    n_blades: int
+    radius: float                         # m
+    hub_radius_frac: float                # r_hub / R
+    chord: Distribution                   # c/R against r/R
+    twist: Distribution                   # blade angle (rad) against r/R
+    thickness: Distribution               # t/c against r/R
+    root_airfoil: str
+    tip_airfoil: str
+    name: str = ""
+    sweep: Distribution | None = None     # tangential offset / R; None = straight
+    dihedral: Distribution | None = None  # axial offset / R; None = straight
     pitch_offset: float = 0.0             # rad, collective
-    root_airfoil: str = "clarky"
-    tip_airfoil: str = "clarky"
-    airfoil_blend_start: float = 0.35     # x where the transition begins
-    chord_scale: float = 1.0              # global chord multiplier (solidity knob)
-    rake: float = 0.0                     # m, axial offset of the tip
+    airfoil_blend_start: float = 0.30     # r/R where root -> tip blending begins
+    chord_scale: float = 1.0
+    rake: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.n_blades < 1:
+            raise ValueError("a propeller needs at least one blade")
+        if not self.radius > 0.0:
+            raise ValueError("radius must be positive")
+        if not 0.0 < self.hub_radius_frac < 0.9:
+            raise ValueError("hub radius ratio must be between 0 and 0.9")
 
     # -- derived -----------------------------------------------------------
     @property
@@ -166,13 +183,8 @@ class BladeGeometry:
     def disk_area(self) -> float:
         return math.pi * (self.radius ** 2 - self.hub_radius ** 2)
 
-    def x_stations(self, n: int, spacing: str = "cosine") -> np.ndarray:
-        """Non-dimensional radii, clustered at the tip where gradients bite.
-
-        Cosine spacing puts more elements where the tip-loss factor is changing
-        fastest, which is worth several percent of integrated thrust accuracy
-        for a given element count.
-        """
+    def x_stations(self, n: int, spacing: str = "cosine") -> tuple[np.ndarray, np.ndarray]:
+        """Non-dimensional radii, clustered at the tip where gradients bite."""
         x0 = self.hub_radius_frac
         if spacing == "uniform":
             edges = np.linspace(x0, 1.0, n + 1)
@@ -203,14 +215,14 @@ class BladeGeometry:
         r = np.maximum(np.asarray(x, dtype=float) * self.radius, 1e-9)
         return self.n_blades * self.chord_at(x) / (2.0 * math.pi * r)
 
-    def activity_factor(self, n: int = 200) -> float:
-        """Per-blade activity factor, the classic power-absorption index.
+    def activity_factor(self, n: int = 400) -> float:
+        """Per-blade activity factor, the standard power-absorption index.
 
-        ``AF = (100000/16) * integral( (c/D) x^3 dx )``.  Note the chord is
-        referenced to *diameter*, not radius -- getting that wrong doubles the
-        number.  Sport model propellers land around 90-140.
+        ``AF = (100000/16) * integral from 0.15 to 1 of (c/D) x^3 dx``, with
+        chord referenced to *diameter*.  Full-size propellers run from about 80
+        (narrow fixed-pitch) to 200 (wide turboprop blades).
         """
-        x, _ = self.x_stations(n, "uniform")
+        x = np.linspace(AF_LOWER, 1.0, n)
         c_over_d = self.chord_at(x) / self.diameter
         return float(100000.0 / 16.0 * np.trapezoid(c_over_d * x ** 3, x))
 
@@ -219,64 +231,63 @@ class BladeGeometry:
         c = self.chord_at(x)
         return float(self.n_blades * np.sum(c * dx * self.radius) / (math.pi * self.radius ** 2))
 
-    def pitch_diameter_ratio(self, x_ref: float = 0.75) -> float:
-        """Geometric pitch/diameter at the 75% station -- the "10x5" number.
+    def beta75(self) -> float:
+        """Blade angle at 0.75 R (rad), including collective."""
+        return float(self.twist_at(np.array([0.75]))[0])
 
-        Geometric pitch is the advance of a screw with the local blade angle:
-        ``p = 2 pi r tan(theta)``.
-        """
+    def pitch_diameter_ratio(self, x_ref: float = 0.75) -> float:
+        """Geometric pitch/diameter at ``x_ref``: the "75x57" number over D."""
         theta = float(self.twist_at(np.array([x_ref]))[0])
         return 2.0 * math.pi * x_ref * self.radius * math.tan(theta) / self.diameter
 
+    def geometric_pitch(self, x_ref: float = 0.75) -> float:
+        """Geometric pitch at ``x_ref`` in metres."""
+        return self.pitch_diameter_ratio(x_ref) * self.diameter
+
     def sections(self, x: np.ndarray) -> list[AnalyticPolar]:
-        """Per-station airfoil, blended from root section to tip section."""
+        """Per-station section, blended from root to tip, at its own thickness."""
         root = get_airfoil(self.root_airfoil)
         tip = get_airfoil(self.tip_airfoil)
         xs = np.asarray(x, dtype=float)
-        if self.root_airfoil == self.tip_airfoil:
-            return [replace(root, thickness=float(t)) for t in self.thickness_at(xs)]
+        thickness = self.thickness_at(xs)
+        if root.name == tip.name:
+            return [replace(root, thickness=float(t)) for t in thickness]
         x0 = self.airfoil_blend_start
         # Smoothstep, not a linear ramp: a linear blend is continuous but its
-        # derivative jumps at x0, and that kink shows up as a visible corner in
-        # the spanwise Cl and thrust-loading curves.
+        # derivative jumps at x0, which shows as a corner in spanwise loading.
         u = np.clip((xs - x0) / max(1.0 - x0, 1e-6), 0.0, 1.0)
         f = u * u * (3.0 - 2.0 * u)
-        out = []
-        for fi, ti in zip(f, self.thickness_at(xs)):
-            out.append(replace(blended_polar(root, tip, float(fi)), thickness=float(ti)))
-        return out
+        return [replace(blended_polar(root, tip, float(fi)), thickness=float(ti))
+                for fi, ti in zip(f, thickness)]
 
     def discretize(self, n: int = 60, spacing: str = "cosine") -> "BladeStations":
         x, dx = self.x_stations(n, spacing)
+        zero = np.zeros_like(x)
+        sweep = self.sweep.evaluate(x) * self.radius if self.sweep is not None else zero
+        dihedral = (self.dihedral.evaluate(x) * self.radius if self.dihedral is not None
+                    else zero) + self.rake * x ** 2
         return BladeStations(
-            x=x,
-            dx=dx,
-            r=x * self.radius,
-            dr=dx * self.radius,
-            chord=self.chord_at(x),
-            twist=self.twist_at(x),
-            thickness=self.thickness_at(x),
-            sweep=self.sweep.evaluate(x) * self.radius,
-            dihedral=self.dihedral.evaluate(x) * self.radius + self.rake * x ** 2,
-            solidity=self.solidity_at(x),
-            polars=self.sections(x),
-            geometry=self,
+            x=x, dx=dx, r=x * self.radius, dr=dx * self.radius,
+            chord=self.chord_at(x), twist=self.twist_at(x),
+            thickness=self.thickness_at(x), sweep=sweep, dihedral=dihedral,
+            solidity=self.solidity_at(x), polars=self.sections(x), geometry=self,
         )
 
     # -- persistence -------------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         for key in ("chord", "twist", "thickness", "sweep", "dihedral"):
-            d[key] = self.__getattribute__(key).to_dict()
+            value = getattr(self, key)
+            d[key] = value.to_dict() if value is not None else None
         return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "BladeGeometry":
         d = dict(d)
         for key in ("chord", "twist", "thickness", "sweep", "dihedral"):
-            if key in d and isinstance(d[key], dict):
+            if isinstance(d.get(key), dict):
                 d[key] = Distribution.from_dict(d[key])
-        known = {f for f in cls.__slots__}
+        known = set(cls.__slots__)
         return cls(**{k: v for k, v in d.items() if k in known})
 
     def save(self, path: str | Path) -> None:
@@ -287,11 +298,10 @@ class BladeGeometry:
         return cls.from_dict(json.loads(Path(path).read_text()))
 
     def describe(self) -> str:
-        return (
-            f"{self.name}: {self.n_blades}-blade, D={self.diameter * 1000:.0f} mm "
-            f"({self.diameter / INCH:.1f} in), P/D={self.pitch_diameter_ratio():.2f}, "
-            f"AF={self.activity_factor():.0f}, sigma={self.mean_solidity():.3f}"
-        )
+        label = f"{self.name}: " if self.name else ""
+        return (f"{label}{self.n_blades}-blade, D = {self.diameter:.3f} m "
+                f"({self.diameter / INCH:.1f} in), beta75 = {math.degrees(self.beta75()):.1f} deg, "
+                f"P/D = {self.pitch_diameter_ratio():.2f}, AF = {self.activity_factor():.0f}")
 
 
 @dataclass(slots=True)
@@ -320,178 +330,113 @@ class BladeStations:
         return stack_tables(self.polars, n_alpha)
 
     def section_params(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Per-station ``(thickness, re_ref, m_crit0, cl_max)``.
+        """Per-station ``(thickness, re_ref, kappa, cl_max)`` for the kernels.
 
-        ``cl_max`` bounds the Prandtl-Glauert lift amplification; without it a
-        transonic propeller tip is handed a lift coefficient it could never
-        reach.
+        ``cl_max`` is the station's thickness-adjusted maximum lift; it bounds
+        the Prandtl-Glauert amplification, without which a transonic tip is
+        handed a lift coefficient it could never reach.
         """
         return (
             np.array([p.thickness for p in self.polars], dtype=np.float64),
             np.array([p.re_ref for p in self.polars], dtype=np.float64),
-            np.array([p.m_crit0 for p in self.polars], dtype=np.float64),
+            np.array([p.kappa for p in self.polars], dtype=np.float64),
             np.array([p.max_lift() for p in self.polars], dtype=np.float64),
         )
 
 
 # ---------------------------------------------------------------------------
-# Presets
+# Building a blade from the numbers a full-size propeller is specified by
 # ---------------------------------------------------------------------------
 
-def constant_pitch_twist(pitch_inches: float, radius: float,
-                         x_ref: Sequence[float] = (0.15, 0.25, 0.4, 0.55, 0.7, 0.85, 1.0)) -> Distribution:
-    """Twist distribution of a true constant-geometric-pitch screw.
+#: Planform shapes, as relative chord against r/R.  Each is scaled so the blade
+#: has exactly the activity factor asked for; the shape only sets *where* the
+#: chord is.  These are typical outlines, not any manufacturer's drawing.
+PLANFORMS: dict[str, tuple[tuple[float, ...], tuple[float, ...]]] = {
+    # Fixed-pitch metal blade: widest near mid-span, rounded tip.
+    "standard": ((0.00, 0.15, 0.25, 0.40, 0.55, 0.70, 0.85, 0.95, 1.00),
+                 (0.50, 0.62, 0.83, 0.98, 1.00, 0.95, 0.80, 0.55, 0.18)),
+    # Wide-chord constant-speed ("paddle") blade: chord carried well outboard.
+    "paddle":   ((0.00, 0.15, 0.25, 0.40, 0.55, 0.70, 0.85, 0.95, 1.00),
+                 (0.45, 0.55, 0.70, 0.86, 0.96, 1.00, 0.98, 0.80, 0.25)),
+    # Straight taper from root to tip.
+    "tapered":  ((0.00, 0.15, 0.25, 0.40, 0.55, 0.70, 0.85, 0.95, 1.00),
+                 (1.00, 1.00, 0.97, 0.92, 0.86, 0.79, 0.70, 0.60, 0.30)),
+}
 
-    This is what "10x5" means: 5 inches of advance per revolution at every
-    station, so the blade angle falls off as atan(p / 2 pi r).
+
+def list_planforms() -> list[str]:
+    return list(PLANFORMS)
+
+
+def helical_twist(pitch_over_diameter: float) -> Distribution:
+    """Blade angle of a constant-geometric-pitch screw: ``atan(P/D / (pi x))``.
+
+    This is what a propeller's "75x57" designation means: 57 inches of advance
+    per revolution at every station.
     """
-    p = pitch_inches * INCH
-    xs = np.asarray(x_ref, dtype=float)
-    ys = np.array([inch_pitch_to_twist(p, float(xi) * radius) for xi in xs])
-    return Distribution("spline", control_x=tuple(xs), control_y=tuple(ys))
+    xs = np.linspace(0.02, 1.0, 50)
+    beta = np.arctan(pitch_over_diameter / (math.pi * xs))
+    return Distribution("spline", control_x=tuple(float(v) for v in xs),
+                        control_y=tuple(float(v) for v in beta))
 
 
-PROP_PRESETS: dict[str, BladeGeometry] = {}
+def pitch_ratio_from_beta75(beta75_deg: float) -> float:
+    """P/D of a helical blade whose 0.75 R blade angle is ``beta75_deg``."""
+    return math.pi * 0.75 * math.tan(math.radians(beta75_deg))
 
 
-def _register(geom: BladeGeometry) -> BladeGeometry:
-    PROP_PRESETS[geom.name] = geom
-    return geom
+def full_size_blade(*, diameter: float, n_blades: int, activity_factor: float,
+                    hub_ratio: float, root_airfoil: str, tip_airfoil: str,
+                    thickness_root: float, thickness_tip: float, planform: str,
+                    beta75_deg: float | None = None, pitch: float | None = None,
+                    name: str = "") -> BladeGeometry:
+    """Build a blade from the way full-size propellers are specified.
 
+    Exactly one of ``beta75_deg`` (blade angle at 0.75 R) or ``pitch``
+    (geometric pitch in metres, the "57" in "75x57") must be given; the twist
+    is helical (constant geometric pitch).  Chord follows ``planform``, scaled
+    so the blade has exactly ``activity_factor``.  Thickness ratio varies
+    linearly from ``thickness_root`` at the hub to ``thickness_tip`` at the tip.
+    Nothing is assumed: every argument is required.
+    """
+    if (beta75_deg is None) == (pitch is None):
+        raise ValueError("give exactly one of beta75_deg or pitch")
+    if planform not in PLANFORMS:
+        raise ValueError(f"unknown planform {planform!r}; have {list(PLANFORMS)}")
+    for label, value in (("diameter", diameter), ("activity_factor", activity_factor),
+                         ("thickness_root", thickness_root), ("thickness_tip", thickness_tip)):
+        if not value > 0.0:
+            raise ValueError(f"{label} must be positive")
+    for section in (root_airfoil, tip_airfoil):
+        get_airfoil(section)                          # raises on an unknown name
 
-def _apc_style(name: str, d_in: float, p_in: float, blades: int = 2) -> BladeGeometry:
-    r = d_in * INCH / 2.0
-    return _register(BladeGeometry(
-        name=name, n_blades=blades, radius=r, hub_radius_frac=0.15,
-        chord=Distribution("spline",
-                           control_x=(0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.95, 1.0),
-                           control_y=(0.114, 0.155, 0.178, 0.188, 0.186, 0.175, 0.155, 0.127, 0.080, 0.020)),
-        twist=constant_pitch_twist(p_in, r),
-        thickness=Distribution("spline",
-                               control_x=(0.15, 0.3, 0.5, 0.75, 1.0),
-                               control_y=(0.22, 0.145, 0.098, 0.072, 0.055)),
-        root_airfoil="clarky", tip_airfoil="e63", airfoil_blend_start=0.4,
-    ))
+    p_over_d = (pitch / diameter) if pitch is not None else pitch_ratio_from_beta75(beta75_deg)
 
+    xs, shape = (np.asarray(v, dtype=float) for v in PLANFORMS[planform])
+    # Integrate with the same interpolant the blade will be evaluated with, or
+    # the activity factor comes back a couple of percent off what was asked.
+    outline = Distribution("spline", control_x=tuple(float(v) for v in xs),
+                           control_y=tuple(float(v) for v in shape))
+    grid = np.linspace(AF_LOWER, 1.0, 4001)
+    integral = np.trapezoid(outline.evaluate(grid) * grid ** 3, grid)
+    k = activity_factor / (100000.0 / 16.0 * integral)      # c/D = k * shape
+    c_over_r = 2.0 * k * shape                               # c/R = 2 c/D
 
-_apc_style("APC 10x5 (sport)", 10.0, 5.0)
-_apc_style("APC 10x7 (fast)", 10.0, 7.0)
-_apc_style("APC 9x4.5 (slow-fly)", 9.0, 4.5)
-_apc_style("APC 13x6.5 (trainer)", 13.0, 6.5)
-_apc_style("APC 6x4 (micro)", 6.0, 4.0)
-_apc_style("Tri-blade 10x6", 10.0, 6.0, blades=3)
-
-_register(BladeGeometry(
-    name="UAV quad 15x5.5 (2-blade)", n_blades=2, radius=15.0 * INCH / 2.0,
-    hub_radius_frac=0.12,
-    chord=Distribution("spline",
-                       control_x=(0.12, 0.3, 0.5, 0.7, 0.85, 0.95, 1.0),
-                       control_y=(0.098, 0.152, 0.166, 0.150, 0.118, 0.072, 0.016)),
-    twist=constant_pitch_twist(5.5, 15.0 * INCH / 2.0),
-    thickness=Distribution("linear", root=0.20, tip=0.06),
-    root_airfoil="clarky", tip_airfoil="mh117", airfoil_blend_start=0.3,
-))
-
-_register(BladeGeometry(
-    name="Ideal-twist research prop", n_blades=2, radius=0.15, hub_radius_frac=0.20,
-    chord=Distribution("betz", root=0.145, tip=0.004, power=3.0),
-    twist=Distribution("inverse", root=0.42, tip=-0.02),
-    thickness=Distribution("linear", root=0.14, tip=0.07),
-    root_airfoil="naca4412", tip_airfoil="naca16509", airfoil_blend_start=0.3,
-))
-
-_register(BladeGeometry(
-    name="Elliptical testbed", n_blades=2, radius=0.127, hub_radius_frac=0.15,
-    chord=Distribution("elliptic", root=0.155, tip=0.006),
-    twist=Distribution("linear", root=0.45, tip=0.12),
-    thickness=Distribution("linear", root=0.15, tip=0.08),
-    root_airfoil="naca0012", tip_airfoil="naca0012",
-))
-
-_register(BladeGeometry(
-    name="Scale warbird 4-blade", n_blades=4, radius=0.20, hub_radius_frac=0.22,
-    chord=Distribution("spline",
-                       control_x=(0.22, 0.4, 0.6, 0.8, 0.95, 1.0),
-                       control_y=(0.105, 0.148, 0.156, 0.134, 0.076, 0.018)),
-    twist=constant_pitch_twist(9.0, 0.20),
-    thickness=Distribution("spline",
-                           control_x=(0.22, 0.5, 0.8, 1.0),
-                           control_y=(0.24, 0.12, 0.080, 0.060)),
-    root_airfoil="arad20", tip_airfoil="naca16509", airfoil_blend_start=0.35,
-    sweep=Distribution("parabolic", root=0.0, tip=0.05, power=2.5),
-))
-
-# ---------------------------------------------------------------------------
-# General-aviation propellers
-#
-# A light-aircraft propeller is a different animal from a model one, and the
-# numbers show it: two orders of magnitude more disk area, a tenth of the RPM,
-# and a tip that is already near its critical Mach number at redline.  That
-# last point is why a 172 is RPM-limited rather than power-limited, and it
-# falls straight out of the solver's compressibility model.
-#
-# Planforms follow published blade-station geometry for the type: relatively
-# narrow, widest around mid-span, structurally thick at the root and thin
-# outboard where Mach matters.  Sections run Clark Y inboard to a NACA 16-series
-# tip, which is the classic propeller combination for exactly that reason.
-# ---------------------------------------------------------------------------
-
-def _ga_blade(name: str, d_in: float, p_in: float, blades: int = 2,
-              hub_frac: float = 0.12, chord_scale: float = 1.0) -> BladeGeometry:
-    r = d_in * INCH / 2.0
-    return _register(BladeGeometry(
-        name=name, n_blades=blades, radius=r, hub_radius_frac=hub_frac,
-        chord=Distribution("spline",
-                           control_x=(0.12, 0.25, 0.40, 0.55, 0.70, 0.85, 0.95, 1.0),
-                           control_y=(0.085, 0.125, 0.150, 0.155, 0.148, 0.125, 0.085, 0.025)),
-        twist=constant_pitch_twist(p_in, r),
-        thickness=Distribution("spline",
-                               control_x=(0.12, 0.30, 0.50, 0.75, 0.95, 1.0),
-                               control_y=(0.24, 0.145, 0.095, 0.068, 0.052, 0.048)),
-        root_airfoil="clarky", tip_airfoil="naca16509", airfoil_blend_start=0.30,
-        chord_scale=chord_scale,
-    ))
-
-
-_ga_blade("Cessna 172 (McCauley 75x57)", 75.0, 57.0)
-_ga_blade("Cessna 172S (McCauley 76x63 cruise)", 76.0, 63.0)
-_ga_blade("Cessna 152 (McCauley 69x52)", 69.0, 52.0)
-_ga_blade("Cessna 182 (constant-speed 82 in)", 82.0, 65.0, hub_frac=0.14)
-_ga_blade("Piper Cub (Sensenich 74x42 climb)", 74.0, 42.0)
-_ga_blade("LSA 3-blade (68x44, geared)", 68.0, 44.0, blades=3, hub_frac=0.15)
-
-
-DEFAULT_PRESET = "Cessna 172 (McCauley 75x57)"
-
-#: The original model/drone presets, kept so the drone workflow is unchanged.
-DRONE_PRESETS = ("APC 10x5 (sport)", "APC 10x7 (fast)", "APC 9x4.5 (slow-fly)",
-                 "APC 13x6.5 (trainer)", "APC 6x4 (micro)", "Tri-blade 10x6",
-                 "UAV quad 15x5.5 (2-blade)", "Ideal-twist research prop",
-                 "Elliptical testbed", "Scale warbird 4-blade")
-
-#: The general-aviation presets added for aircraft work.
-AIRCRAFT_PRESETS = ("Cessna 172 (McCauley 75x57)", "Cessna 172S (McCauley 76x63 cruise)",
-                    "Cessna 152 (McCauley 69x52)", "Cessna 182 (constant-speed 82 in)",
-                    "Piper Cub (Sensenich 74x42 climb)", "LSA 3-blade (68x44, geared)")
-
-
-def list_presets(category: str = "all") -> list[str]:
-    """Preset names, optionally filtered to ``"aircraft"`` or ``"drone"``."""
-    if category == "aircraft":
-        return list(AIRCRAFT_PRESETS)
-    if category == "drone":
-        return list(DRONE_PRESETS)
-    return list(PROP_PRESETS)
-
-
-def get_preset(name: str) -> BladeGeometry:
-    if name not in PROP_PRESETS:
-        raise KeyError(f"unknown preset {name!r}; have {list(PROP_PRESETS)}")
-    return replace(PROP_PRESETS[name])
+    x_hub = float(hub_ratio)
+    return BladeGeometry(
+        n_blades=int(n_blades), radius=diameter / 2.0, hub_radius_frac=x_hub,
+        chord=Distribution("spline", control_x=tuple(float(v) for v in xs),
+                           control_y=tuple(float(v) for v in c_over_r)),
+        twist=helical_twist(p_over_d),
+        thickness=Distribution("spline", control_x=(0.0, x_hub, 1.0),
+                               control_y=(float(thickness_root), float(thickness_root),
+                                          float(thickness_tip))),
+        root_airfoil=root_airfoil, tip_airfoil=tip_airfoil, name=name,
+    )
 
 
 __all__ = [
-    "Distribution", "BladeGeometry", "BladeStations", "constant_pitch_twist",
-    "PROP_PRESETS", "DEFAULT_PRESET", "DRONE_PRESETS", "AIRCRAFT_PRESETS",
-    "get_preset", "list_presets", "DEG",
+    "Distribution", "BladeGeometry", "BladeStations", "PLANFORMS", "AF_LOWER",
+    "list_planforms", "list_airfoils", "helical_twist", "pitch_ratio_from_beta75",
+    "full_size_blade", "DEG",
 ]

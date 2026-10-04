@@ -3,11 +3,11 @@
 from .bootstrap import Environment, in_colab, in_notebook, probe, setup
 
 __all__ = ["setup", "probe", "Environment", "in_colab", "in_notebook", "launch",
-           "PropwashLab"]
+           "PropwashApp"]
 
 
 def __getattr__(name):
-    if name in ("launch", "PropwashLab"):
+    if name in ("launch", "PropwashApp"):
         from . import app
         return getattr(app, name)
     raise AttributeError(name)

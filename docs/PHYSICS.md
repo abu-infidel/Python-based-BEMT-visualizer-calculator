@@ -126,37 +126,71 @@ Without it, predicted thrust is optimistic by roughly 5–15%, concentrated
 entirely near the tip. `F` depends on `φ`, so it is evaluated inside the
 residual, not once beforehand.
 
+### Section data for full-size blades
+
+Propwash models full-size propellers only, so every section in the library is
+fitted at a chord Reynolds number of 3 million, typical of a light-aircraft
+blade at cruise. The library holds Clark Y, R.A.F. 6, NACA 16-series, NACA
+64-series, ARA-D and NACA 0012 (`propwash.airfoil.AIRFOIL_LIBRARY`). Each blade
+station uses its own thickness ratio:
+
+- **Profile drag** scales with Hoerner's form factor, `1 + 2t + 60t⁴`, relative
+  to the section's nominal thickness.
+- **Maximum lift** scales as `(t/0.12)^0.85` below 12% thickness, holds flat to
+  15%, and falls as `1 − 1.5(t − 0.15)` above that, floored at half. Thin tips
+  stall early; thick roots lose lift.
+
+**Blade angle reference.** Propeller pitch and blade angles are measured off
+the blade's flat face. On a flat-bottomed Clark Y that face sits about 2° nose
+down from the leading-edge-to-trailing-edge chord, so the Clark Y zero-lift
+angle is referenced to the face: −4.2°. That value lies inside the published
+range (−3.6° chord-referenced to about −5.5° face-referenced). It was chosen
+against the Cessna 172N cruise data, as described in [VALIDATION.md](VALIDATION.md).
+
 ### Reynolds number
 
-A model propeller blade spans a factor of ~5 in chord Reynolds number from root
-to tip, and the root of a small propeller can drop to a few thousand. Turbulent
-skin friction goes as `Re^−0.2`; below `Re ≈ 2×10⁴` the boundary layer is
-laminar and separation-prone, so drag is inflated further. The two factors
-compound, so their product is clamped to `[0.5, 4.0]` — measured low-Re polars
-show profile drag rising three- to four-fold, not ten-fold. Maximum lift is
-scaled down too.
+A full-size blade runs at chord Reynolds numbers from a few hundred thousand at
+the root to a few million outboard, so the corrections are mild and bounded:
+
+```
+Cd  ×= clip((Re_ref / Re)^0.2, 0.75, 1.6)            turbulent skin friction
+Cl_max ×= clip(1 + 0.06 log10(Re / Re_ref), 0.85, 1.05)
+```
+
+with `Re` floored at 10⁴. Only the lift *ceiling* moves with Reynolds number.
+The lift-curve slope does not, which is what wind-tunnel data in this range
+show.
 
 ### Compressibility
 
-Prandtl–Glauert amplifies lift as `1/sqrt(1 − M²)`, clipped at `M = 0.92`. Wave
-drag follows Lock's fourth-power rise past the drag-divergence Mach number,
-`ΔCd = 20 (M − M_dd)⁴`, with `M_dd` falling with both lift and thickness. This
-is why tip speed, not power, is what limits propeller RPM.
-
-**The amplified lift is then capped.** Prandtl–Glauert raises the lift-curve
-*slope*; maximum lift *falls* with Mach. Applying the amplification without a
-ceiling hands a transonic tip a lift coefficient it could never reach — on a
-Cessna 172 at redline it produced `Cl = 1.57` and `L/D = 160`, neither of which
-exists. The ceiling used is
+Prandtl–Glauert amplifies lift as `1/sqrt(1 − M²)`, with `M` clipped at 0.92 for
+the amplification. Wave drag follows Korn's drag-divergence estimate and Lock's
+fourth-power rise:
 
 ```
-Cl_max(M) = Cl_max(0) · max(1 − 0.9 (M − 0.35)^1.5, 0.35)
+M_dd  = κ − t/c − |Cl|/10                (Korn; κ per section, 0.83–0.90)
+M_cr  = M_dd − (0.1/80)^(1/3)            (= M_dd − 0.1077)
+ΔCd   = 20 · max(min(M, 1.2) − M_cr, 0)⁴  (Lock)
+```
+
+This is why tip speed, not power, limits propeller RPM, and why thin high-κ
+sections (NACA 16) belong at fast tips.
+
+**The amplified lift is then capped.** Prandtl–Glauert raises the lift-curve
+*slope*; maximum lift *falls* with Mach. Without a ceiling, a transonic tip is
+handed a lift coefficient it could never reach. The ceiling used is
+
+```
+Cl_max(M) = Cl_max · Re_factor · max(1 − 0.9 (M − 0.35)^1.5, 0.35)
 ```
 
 which is a smooth fit to the usual shape of measured high-subsonic `Cl_max`
-data, not a first-principles result. `Cl_max(0)` comes from the section's own
-polar and is carried per blade station. A drone propeller at `M_tip ≈ 0.3` never
-touches this; a light aircraft at `M_tip ≈ 0.75` lives in it.
+data, not a first-principles result. Without the Mach correction, lift is still
+capped at the station's `Cl_max`.
+
+All four compute paths (NumPy, Numba CPU/CUDA, the CUDA/OpenCL C kernel and
+PyTorch) implement these corrections identically. The test suite holds them to
+agreement within 1e-12.
 
 ### Deep stall
 
@@ -183,11 +217,10 @@ This extrapolation exists to keep the solver convergent, not to be accurate at
 | `η` | `T V / P = C_T J / C_P` |
 | `FoM` | `T^1.5 / (sqrt(2 ρ A) P)` |
 
-`n` is revolutions per second. `η` is a forward-flight metric and `FoM` a hover
-one; each is reported as zero where it stops meaning anything, rather than as a
-spike. Past the zero-thrust advance ratio `T V / P` goes negative and then
-diverges as power crosses zero too — that is a coordinate artefact, not
-performance.
+`n` is revolutions per second. `η` is a forward-flight metric and `FoM` a static
+one. In a report, each is `null` with a reason code where it stops meaning
+anything (`NA_STATIC`, `NA_IN_FORWARD_FLIGHT`, `NOT_PRODUCING_THRUST`). It is
+never set to zero, because a zero would read as a real, terrible result.
 
 ---
 
@@ -248,63 +281,112 @@ drag at each station's local Mach number, so the blade is designed to *achieve*
 the target `Cl` rather than to achieve it only in incompressible flow. With that
 correction the design agrees with the independent BEMT solver to 1.4% on thrust.
 
-## 6. Propeller/motor matching
+### Which diameter? — a designed blade at every candidate
 
-A propeller has no RPM of its own. The first-order brushless DC model,
+Momentum theory always prefers a bigger disk, so on its own it cannot choose a
+propeller. Sizing mode (`size_propeller`) therefore designs the
+minimum-induced-loss blade for every candidate diameter. The candidates run
+from half the largest allowed diameter up to the smaller of the installation
+limit and the diameter at which the helical tip Mach reaches its limit. The
+diameters are then compared on the efficiency of their *best possible* blade.
+Profile drag and compressible wave drag both grow with tip speed, so the best
+diameter can be inside the range rather than at its edge. The report says
+which it is. The winner is analysed again by the independent BEMT solver and
+both answers are reported. For the Cessna 172N cruise point (8,000 ft, 122 KTAS,
+75%, 2,650 rpm) sizing picks a 72-inch, 60-inch-pitch, activity factor 90
+two-blade propeller. The real one is 75 × 57.
 
-```
-ω = Kv (V_applied − I R_m),    Q_shaft = (I − I₀) / Kv
-```
+## 6. The engine, and where the propeller settles
 
-gives torque falling linearly with speed to zero at no-load (flat at the top
-where the ESC current limit bites), while propeller torque rises roughly as
-`n²`. Monotone in opposite directions means exactly one crossing, so bisection
-is again unconditionally safe — which matters when a GUI slider is calling it
-sixty times a second.
+### Piston engine
 
-That crossing is the operating point, and moving it is what every control in
-the program is really doing.
+Every engine number is an input: rated power, rated RPM (also the RPM limit),
+gear ratio, aspiration and, for a turbocharged engine, its critical altitude.
+The model constants below are printed in every report's `[MODEL]` section.
 
-A **piston engine** is modelled the same way but the curve has a different
-shape: torque peaks below rated speed and droops only gently, so there is no
-no-load speed to catch a too-fine propeller — it would simply over-rev, which is
-reported rather than silently bracketed. Power lapses with altitude faster than
-density alone, via the Gagg–Farrar relation `P/P_SL = σ − (1 − σ)/7.55`, and
-fuel flow follows from brake specific fuel consumption. Reduction gearing (a
-Rotax, say) divides propeller speed from crankshaft speed.
+- **Torque curve.** Full-throttle crankshaft torque is a parabola in RPM. It
+  peaks at 0.78 of rated speed and is 8% lower again at rated speed, anchored
+  so that power at rated RPM equals rated power.
+- **Altitude.** Normally aspirated: Gagg–Farrar, `P/P_SL = σ − (1 − σ)/7.55`.
+  Turbocharged: flat to the critical altitude, then the same lapse relative
+  to the density there.
+- **Fuel.** Fuel flow is BSFC × shaft power. Without a BSFC input it is
+  reported as not available, never assumed.
+- **Gearing** divides propeller speed from crankshaft speed.
 
-Because an engine makes no torque below idle, its bracket starts there rather
-than at zero — otherwise the solver finds zero supply against zero demand and
-concludes, wrongly, that the engine cannot turn the propeller.
+### Matching (`propwash/matching.py`)
+
+A propeller has no RPM of its own. Each solve below is vectorised over flight
+speed: a scan grid, then three rounds of sub-gridding, each a single batched
+BEMT call for all speeds together.
+
+| power setting | fixed pitch | constant speed |
+|---|---|---|
+| full throttle | RPM where engine torque = propeller torque | blade angle that absorbs full-throttle power at the governor RPM |
+| set RPM | power absorbed at that RPM (and the throttle needed) | (not meaningful: RPM is the governor's) |
+| set power | RPM where the propeller absorbs it | blade angle that absorbs it |
+| level-flight trim | RPM where thrust = drag | blade angle where thrust = drag |
+
+Every solve returns a status per speed instead of a number that might be a
+fallback. The statuses are `ok`, `rpm_limited`, `on_fine_stop`,
+`on_coarse_stop`, `windmilling`, `too_coarse`, `power_not_available`,
+`thrust_not_reachable` and `below_running_range`; the
+[report format](report-format/README.md#52-operating-point-statuses) defines
+them. In particular:
+
+- **A fixed-pitch propeller that would over-rev** at full throttle is reported
+  at the RPM limit, with the reduced throttle that holds it (`rpm_limited`). It
+  is not clipped silently and not reported as zero.
+- **A constant-speed propeller on a stop** has lost its governor. It is solved
+  as a fixed-pitch propeller at that stop and throttle, so its RPM falls below
+  (fine stop) or rises above (coarse stop) the setting.
+- **Spurious roots are rejected.** At high airspeed and very low RPM, momentum
+  theory has nonsense solutions deep in the windmill-brake state, with drags
+  several times that of a solid disk. Those points are masked as what they
+  physically are, a propeller being driven by the air. The RPM searches also
+  take the highest stable crossing, the one a propeller reaches by spinning
+  up.
+
+### Airframe performance (optional)
+
+With weight, wing area, span, CD0, Oswald *e* and CLmax, the drag polar
+`CD = CD0 + CL²/(π e AR)` gives:
+
+- drag and excess thrust at the operating point;
+- the level-flight trim at the operating airspeed;
+- the top level-flight speed at the power setting, searched up to a bound no
+  aircraft can exceed: `(2P/(ρ S CD0))^(1/3)`;
+- the best climb and its speed;
+- the service ceiling (100 ft/min) and absolute ceiling at full throttle, by
+  false position on altitude.
 
 ---
 
 ## 7. What this model does not do
 
-- **Only the thrusting branch is bracketed.** Windmilling and propeller-brake
-  states have their root outside `(0, π/2)`. Those elements are reported as
-  non-converged — `converged_fraction < 1` — rather than returned as
-  plausible-looking nonsense.
-- **Static power absorption is under-predicted for aircraft propellers.** At
-  V = 0 a cruise-pitched blade is partly stalled over much of its span, which is
-  where 2-D strip theory is least reliable. The Cessna 172 propeller comes out
-  absorbing roughly 30% less power than it really does, so static run-up RPM is
-  predicted high and the engine match reports an over-rev. Forward flight —
-  which is what sizing and cruise performance depend on — agrees well. Do not
-  size a propeller on its static numbers here.
-- **Strip theory.** Each station is independent. No radial flow, no
-  hub/spinner blockage, no blade flexibility, no unsteady aerodynamics, no
-  non-axial inflow, no ground effect.
-- **Rotational stall delay is off by default.** The Du-Selig/Eggers model is
-  implemented (`SolverOptions.stall_delay`) but not enabled, because it mostly
-  affects the near-root region that contributes little thrust.
-- **The bundled polars are parametrised models**, fitted to published section
-  characteristics, not digitised wind-tunnel data. Load real polars with
-  `propwash.airfoil.load_polar_file` for anything that matters.
-
-Against published static data for an APC 10×5, this model lands within roughly
-10% and under-predicts. That is the normal direction and magnitude for BEMT, and
-it is the number to keep in mind before trusting any third significant figure.
+- **Full-size aircraft only.** The section data, Reynolds-number corrections
+  and engine model are for light-aircraft and larger propellers. The drone and
+  electric-motor version is preserved on the `legacy/drone-and-aircraft` branch.
+- **Climb and ceiling are over-predicted.** For the Cessna 172N they come out
+  16% (climb) and 22% (ceiling) high (see [VALIDATION.md](VALIDATION.md)). The
+  model leaves out installation losses, namely slipstream scrubbing over the
+  cowling and fuselage and cooling drag, and these matter most at the low
+  speeds where climb happens. The airframe's drag polar is an input you supply.
+- **Static thrust** relies on post-stall section data over the inner blade,
+  where 2-D strip theory is least reliable. The static RPM of the C172N
+  reference case is right, but only because the unpublished blade activity
+  factor was calibrated to it.
+- **Strip theory.** Each station is independent. There is no radial flow, no
+  hub or spinner blockage, no blade flexibility, no unsteady aerodynamics, no
+  non-axial inflow and no ground effect. There is also no rotational stall
+  delay.
+- **Helical twist.** Blades built from a pitch are constant-pitch screws.
+  Real blades often deviate near the root and tip.
+- **The bundled polars are parametrised models** fitted to published section
+  characteristics, not digitised wind-tunnel data. For anything that matters,
+  load real polars with `propwash.airfoil.load_polar_file`.
+- **The engine torque curve is generic.** Near rated RPM it matters little;
+  far below it, it is only a rough guide.
 
 ---
 
@@ -319,8 +401,6 @@ reading if you want the full arguments.
   Energieverlust*. Where the tip-loss factor comes from.
 - Viterna, L. A. & Corrigan, R. D. (1981). *Fixed-pitch rotor performance of
   large horizontal-axis wind turbines*. The deep-stall extrapolation.
-- Du, Z. & Selig, M. S. (1998). *A 3-D stall-delay model for horizontal axis wind
-  turbine performance prediction*. AIAA 98-0021.
 - Ning, A. (2014). *A simple solution method for the blade element momentum
   equations with guaranteed convergence*. Wind Energy 17(9). The
   single-residual-in-φ idea, here adapted to the propeller convention.
@@ -333,3 +413,6 @@ reading if you want the full arguments.
   SAE 790585. The engineering form of Betz's condition.
 - Gudmundsson, S. (2014). *General Aviation Aircraft Design*, ch. 15. The
   actuator-disk sizing procedure, and the Gagg–Farrar piston power lapse.
+- Korn, D. (1979) and Lock, R. C. (1986). The drag-divergence estimate and the
+  fourth-power wave-drag rise used for compressibility.
+- Hoerner, S. F. (1965). *Fluid-Dynamic Drag*. The thickness form factor.

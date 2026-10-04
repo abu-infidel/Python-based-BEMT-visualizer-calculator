@@ -16,7 +16,7 @@ matplotlib.use("Agg")
 from propwash.bemt.core import OperatingPoint          # noqa: E402
 from propwash.bemt.solver import PropellerSolver       # noqa: E402
 from propwash.bemt.sweep import j_sweep, pitch_rpm_map  # noqa: E402
-from propwash.geometry import get_preset               # noqa: E402
+from propwash.atmosphere import isa                    # noqa: E402
 from propwash.mesh import build_propeller_mesh         # noqa: E402
 from propwash.viz import palette                       # noqa: E402
 
@@ -73,9 +73,7 @@ def test_plotly_colorscale_is_well_formed():
 
 
 def test_every_view_field_has_a_style():
-    from propwash.colab.app import VIEW_FIELDS
-    from propwash.gui.app import VIEW_FIELDS as GUI_FIELDS
-    for name in set(VIEW_FIELDS) | set(GUI_FIELDS):
+    for name in ("dt_dr", "dq_dr", "alpha", "cl", "cd", "mach"):
         assert name in palette.FIELD_STYLES, f"{name} has no display style"
         assert palette.field_label(name)
 
@@ -90,10 +88,12 @@ def test_field_ramp_picks_diverging_for_signed_quantities():
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
-def solved():
-    prop = get_preset("APC 10x5 (sport)")
+def solved(prop):
     solver = PropellerSolver(prop)
-    return prop, solver, solver.solve(OperatingPoint(rpm=9000.0, v_inf=10.0))
+    return prop, solver, solver.solve(OperatingPoint(rpm=2400.0, v_inf=50.0, air=SL))
+
+
+SL = isa(0.0)
 
 
 def test_matplotlib_figures_build(solved, tmp_path):
@@ -103,11 +103,13 @@ def test_matplotlib_figures_build(solved, tmp_path):
 
     figures = [
         plots.spanwise_figure(result, solver.stations),
-        plots.j_sweep_figure(j_sweep(prop, rpm=9000.0, n=24)),
+        plots.j_sweep_figure(j_sweep(prop, rpm=2400.0, j_max=1.0, air=SL, n=24,
+                                     backend="numpy")),
         plots.blade_planform_figure(solver.stations),
         plots.polar_figure(solver.stations.polars[10]),
         plots.map_figure(pitch_rpm_map(prop, np.linspace(-4, 8, 6),
-                                       np.linspace(3000, 11000, 8)),
+                                       np.linspace(1500, 2700, 8), v_inf=0.0, air=SL,
+                                       backend="numpy"),
                          "thrust", mark_best="thrust"),
     ]
     for i, fig in enumerate(figures):
@@ -116,17 +118,6 @@ def test_matplotlib_figures_build(solved, tmp_path):
         fig.savefig(path, dpi=60)
         assert path.stat().st_size > 2000
         plt.close(fig)
-
-
-def test_matching_figure_marks_the_crossing(tmp_path):
-    import matplotlib.pyplot as plt
-    from propwash.motor import get_motor
-    from propwash.viz.plots import matching_figure
-    rpm = np.linspace(500.0, 11000.0, 40)
-    fig = matching_figure(rpm, 2.2e-9 * rpm ** 2,
-                          get_motor("Sport 2820 kv1000").shaft_torque(rpm), 9000.0)
-    assert fig.axes
-    plt.close(fig)
 
 
 def test_dark_mode_figures_use_the_dark_surface(solved):
@@ -144,11 +135,9 @@ def test_plotly_propeller_figure(solved):
     from propwash.viz.plotly3d import propeller_figure, split_faces_by_part
     prop, _, result = solved
     mesh = build_propeller_mesh(prop, n_span=20, n_chord=21)
-
     blade_faces, hub_faces = split_faces_by_part(mesh)
     assert blade_faces.size and hub_faces.size
     assert blade_faces.shape[0] + hub_faces.shape[0] == mesh.n_faces
-
     fig = propeller_figure(mesh, result, "dt_dr", animate=True, n_frames=6)
     assert len(fig.data) == 2, "blade and spinner are separate traces"
     assert len(fig.frames) == 6
@@ -172,7 +161,8 @@ def test_plotly_helper_figures(solved):
     assert spanwise_line_figure(result, ("cl", "alpha")).data
     assert curve_figure(np.arange(5.0), {"a": np.arange(5.0)}, "x", "y").data
     assert heatmap_figure(pitch_rpm_map(prop, np.linspace(0, 6, 4),
-                                        np.linspace(4000, 9000, 5)), "thrust").data
+                                        np.linspace(1500, 2700, 5), v_inf=40.0, air=SL,
+                                        backend="numpy"), "thrust").data
 
 
 # ---------------------------------------------------------------------------
@@ -185,58 +175,51 @@ def _run(*args, timeout: int = 420):
 
 
 def test_cli_version_and_help():
-    assert _run("--version").returncode == 0
-    assert "propeller" in _run("--help").stdout.lower()
+    assert "2.0.0" in _run("--version").stdout
+    out = _run("--help").stdout
+    for cmd in ("template", "run", "parse", "validate", "bench", "gui"):
+        assert cmd in out
 
 
-def test_cli_env_reports_backends():
-    out = _run("env")
-    assert out.returncode == 0
-    assert "Compute backends" in out.stdout
-    assert "numpy" in out.stdout
-
-
-def test_cli_presets_lists_everything():
-    out = _run("presets")
-    assert out.returncode == 0
-    for token in ("APC 10x5 (sport)", "Clark Y", "Sport 2820 kv1000"):
-        assert token in out.stdout
-
-
-def test_cli_solve_writes_outputs(tmp_path):
-    csv = tmp_path / "span.csv"
-    js = tmp_path / "summary.json"
-    out = _run("solve", "--rpm", "8000", "--speed", "10",
-               "--spanwise", str(csv), "--json", str(js))
-    assert out.returncode == 0, out.stderr
-    assert csv.exists() and js.exists()
+def test_cli_template_is_blank_and_fields_are_documented(tmp_path):
     import json
-    assert json.loads(js.read_text())["thrust_N"] > 0.0
+    path = tmp_path / "case.json"
+    assert _run("template", "--mode", "sizing", "-o", str(path)).returncode == 0
+    case = json.loads(path.read_text())
+    assert case["case.mode"] == "sizing"
+    assert all(v is None for k, v in case.items() if k != "case.mode")
+    assert "propeller.activity_factor" in _run("fields").stdout
 
 
-def test_cli_match_and_sweep(tmp_path):
-    out = _run("match", "--motor", "Sport 2820 kv1000")
-    assert out.returncode == 0 and "shaft speed" in out.stdout
-
-    plot = tmp_path / "sweep.png"
-    out = _run("sweep", "--points", "16", "--plot", str(plot))
-    assert out.returncode == 0 and "Peak efficiency" in out.stdout
-    assert plot.stat().st_size > 5000
-
-
-def test_cli_mesh_export(tmp_path):
-    out = _run("mesh", "--span", "16", "--chord", "17", "-o", str(tmp_path))
-    assert out.returncode == 0, out.stderr
-    assert list(tmp_path.glob("*.obj")) and list(tmp_path.glob("*.stl"))
-
-
-def test_cli_bench_is_small_but_real():
-    out = _run("bench", "--cases", "64", "--elements", "16", "--bisect", "20")
-    assert out.returncode == 0, out.stderr
-    assert "numpy" in out.stdout and "Mres/s" in out.stdout
+def test_cli_run_writes_a_report_that_parse_reads(tmp_path, c172_case):
+    import json
+    case = tmp_path / "c172.json"
+    case.write_text(json.dumps(dict(c172_case, **{"flight.airspeed_ktas": 0.0,
+                                                   "airframe.weight_lb": None,
+                                                   "airframe.wing_area_ft2": None,
+                                                   "airframe.wing_span_ft": None,
+                                                   "airframe.cd0": None,
+                                                   "airframe.oswald_e": None,
+                                                   "airframe.cl_max": None})))
+    report = tmp_path / "out.txt"
+    res = _run("run", str(case), "-o", str(report))
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "engine_rpm" in res.stdout
+    parsed = json.loads(_run("parse", str(report), "--json").stdout)
+    assert parsed["integrity"]["ok"]
+    assert parsed["sections"]["OPERATING_POINT"]["status"]["value"] == "ok"
 
 
-def test_cli_colab_explains_itself_outside_a_notebook():
-    out = _run("colab")
-    assert out.returncode == 0
-    assert "notebook" in out.stdout.lower()
+def test_cli_run_reports_missing_fields(tmp_path):
+    case = tmp_path / "blank.json"
+    case.write_text('{"case.mode": "analysis"}')
+    res = _run("run", str(case))
+    assert res.returncode == 1
+    assert "MISSING" in res.stdout
+
+
+def test_cli_env_and_bench():
+    assert "backend" in _run("env").stdout.lower()
+    res = _run("bench", "--cases", "64", "--bisect", "20")
+    assert res.returncode == 0, res.stderr
+    assert "numpy" in res.stdout

@@ -151,7 +151,7 @@ def solve_batch_opencl(stations, rpm: np.ndarray, v_inf: np.ndarray, air,
                          hostbuf=np.ascontiguousarray(array, dtype=np.float64))
 
     dev_in = [ro(a[k]) for k in ("r", "chord", "twist", "sigma", "thickness",
-                                 "re_ref", "m_crit0", "cl_max", "dr",
+                                 "re_ref", "kappa", "cl_max", "dr",
                                  "cl_tab", "cd_tab")]
     dev_in.append(ro(rpm_to_rad_s(np.asarray(rpm, dtype=np.float64)).ravel()))
     dev_in.append(ro(np.asarray(v_inf, dtype=np.float64).ravel()))

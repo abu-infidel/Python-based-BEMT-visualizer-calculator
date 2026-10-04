@@ -45,8 +45,9 @@ from typing import Any
 
 import numpy as np
 
-from .airfoil import DEG, AirfoilPolar, get_airfoil
-from .atmosphere import SEA_LEVEL, AirState
+from .airfoil import (DEG, AirfoilPolar, critical_mach, drag_divergence,
+                      get_airfoil)
+from .atmosphere import AirState
 from .geometry import BladeGeometry, Distribution
 from .units import HORSEPOWER, rpm_to_rad_s
 
@@ -106,9 +107,9 @@ def induced_velocity(thrust: float, v_inf: float, disk_area: float,
                                     + max(thrust, 0.0) / (2.0 * rho * disk_area))
 
 
-def momentum_sizing(thrust: float, v_inf: float, diameter: float,
-                    air: AirState | None = None, eta_p: float = 0.80,
-                    k_fan: float = 1.0, rpm: float | None = None) -> DiskSizing:
+def momentum_sizing(thrust: float, v_inf: float, diameter: float, air: AirState,
+                    eta_p: float, k_fan: float = 1.0,
+                    rpm: float | None = None) -> DiskSizing:
     """Size an actuator disk: thrust and speed in, required power out.
 
     ``eta_p`` is the propulsive efficiency you expect of a real propeller of
@@ -116,7 +117,6 @@ def momentum_sizing(thrust: float, v_inf: float, diameter: float,
     constant-speed).  ``k_fan`` is Gudmundsson's ducted-fan factor; leave it at
     1 for an open propeller.
     """
-    air = air or SEA_LEVEL
     area = math.pi * diameter ** 2 / 4.0
     w = induced_velocity(thrust, v_inf, area, air.density)
     ideal = thrust * (v_inf + w)
@@ -135,11 +135,9 @@ def momentum_sizing(thrust: float, v_inf: float, diameter: float,
     )
 
 
-def diameter_sweep(thrust: float, v_inf: float,
-                   diameters: np.ndarray | None = None,
-                   air: AirState | None = None, eta_p: float = 0.80,
-                   rpm: float | None = None,
-                   tip_mach_limit: float = 0.85) -> dict[str, np.ndarray]:
+def diameter_sweep(thrust: float, v_inf: float, diameters: np.ndarray, air: AirState,
+                   eta_p: float, rpm: float | None = None,
+                   tip_mach_limit: float | None = None) -> dict[str, np.ndarray]:
     """Required power against diameter -- the trade that picks the propeller.
 
     Power falls monotonically with diameter, so the choice is set by the
@@ -147,9 +145,6 @@ def diameter_sweep(thrust: float, v_inf: float,
     at the small end.  ``tip_mach_limit`` marks where compressibility starts
     eating the gain; ``feasible`` is False beyond it.
     """
-    air = air or SEA_LEVEL
-    if diameters is None:
-        diameters = np.linspace(0.5, 3.0, 60)
     d = np.asarray(diameters, dtype=float)
 
     area = math.pi * d ** 2 / 4.0
@@ -168,7 +163,8 @@ def diameter_sweep(thrust: float, v_inf: float,
     if rpm is not None:
         tip = np.hypot(rpm_to_rad_s(rpm) * d / 2.0, v_inf) / air.sound_speed
         out["tip_mach"] = tip
-        out["feasible"] = tip <= tip_mach_limit
+        if tip_mach_limit is not None:
+            out["feasible"] = tip <= tip_mach_limit
     return out
 
 
@@ -211,10 +207,9 @@ class BladeDesign:
         return float(100000.0 / 16.0
                      * np.trapezoid(self.chord / self.diameter * self.x ** 3, self.x))
 
-    def to_geometry(self, name: str = "Optimum (Adkins-Liebeck)",
-                    airfoil: str = "clarky", tip_airfoil: str | None = None,
-                    thickness_root: float = 0.20,
-                    thickness_tip: float = 0.06) -> BladeGeometry:
+    def to_geometry(self, *, airfoil: str, thickness_root: float, thickness_tip: float,
+                    tip_airfoil: str | None = None,
+                    name: str = "Minimum-induced-loss design") -> BladeGeometry:
         """Turn the design into a blade the BEMT solver can analyse.
 
         Chord and twist become spline distributions through the design
@@ -231,7 +226,9 @@ class BladeDesign:
                                                for c in self.chord[keep])),
             twist=Distribution("spline", control_x=xs,
                                control_y=tuple(float(t) for t in self.twist[keep])),
-            thickness=Distribution("linear", root=thickness_root, tip=thickness_tip),
+            thickness=Distribution("spline", control_x=(0.0, self.hub_radius / self.radius, 1.0),
+                                   control_y=(float(thickness_root), float(thickness_root),
+                                              float(thickness_tip))),
             root_airfoil=airfoil, tip_airfoil=tip_airfoil or airfoil,
             airfoil_blend_start=0.35,
         )
@@ -247,7 +244,7 @@ class BladeDesign:
 
 
 def _compressible_section(polar: AirfoilPolar, cl_target: float, mach: np.ndarray,
-                          thickness: np.ndarray, m_crit0: float = 0.78
+                          thickness: np.ndarray, kappa: float
                           ) -> tuple[np.ndarray, np.ndarray]:
     """Angle of attack and drag needed to *achieve* ``cl_target`` at each Mach.
 
@@ -269,8 +266,8 @@ def _compressible_section(polar: AirfoilPolar, cl_target: float, mach: np.ndarra
     alpha = np.interp(cl_inc, cls[:peak + 1], grid[:peak + 1])
     cd = np.interp(alpha, grid, cds)
 
-    m_dd = m_crit0 - 0.1 * abs(cl_target) - np.asarray(thickness, dtype=float)
-    cd = cd + 20.0 * np.maximum(np.asarray(mach, dtype=float) - m_dd, 0.0) ** 4
+    m_cr = critical_mach(abs(cl_target), np.asarray(thickness, dtype=float), kappa)
+    cd = cd + drag_divergence(np.asarray(mach, dtype=float), m_cr)
     return alpha, cd
 
 
@@ -298,13 +295,13 @@ def _design_point(polar: AirfoilPolar, design_cl: float | None,
 
 
 def adkins_liebeck_design(
-        radius: float, n_blades: int, rpm: float, v_inf: float,
+        radius: float, n_blades: int, rpm: float, v_inf: float, *,
+        air: AirState, airfoil: str | AirfoilPolar, hub_radius_frac: float,
+        thickness_root: float, thickness_tip: float,
         thrust: float | None = None, power: float | None = None,
-        air: AirState | None = None, airfoil: str | AirfoilPolar = "clarky",
-        design_cl: float | None = 0.7, design_alpha: float | None = None,
-        hub_radius_frac: float = 0.15, n_stations: int = 40,
-        max_iter: int = 60, tol: float = 1e-7, compressible: bool = True,
-        thickness_root: float = 0.20, thickness_tip: float = 0.06) -> BladeDesign:
+        design_cl: float | None = None, design_alpha: float | None = None,
+        n_stations: int = 40, max_iter: int = 60, tol: float = 1e-7,
+        compressible: bool = True) -> BladeDesign:
     r"""Design a minimum-induced-loss propeller (Adkins & Liebeck, 1994).
 
     Specify exactly one of ``thrust`` (N) or ``power`` (W): the first designs a
@@ -339,8 +336,9 @@ def adkins_liebeck_design(
     if v_inf <= 0.0:
         raise ValueError("Adkins-Liebeck design needs a forward speed; "
                          "size a static propeller with momentum_sizing() instead")
+    if design_cl is None and design_alpha is None:
+        raise ValueError("give the section design point: design_cl or design_alpha")
 
-    air = air or SEA_LEVEL
     rho, mu = air.density, air.viscosity
     omega = rpm_to_rad_s(rpm)
     lam = v_inf / (omega * radius)                     # advance ratio V/(omega R)
@@ -350,7 +348,7 @@ def adkins_liebeck_design(
 
     xi = np.linspace(hub_radius_frac, 0.999, n_stations)
     thickness = thickness_root + (thickness_tip - thickness_root) * xi
-    m_crit0 = float(getattr(polar, "m_crit0", 0.78))
+    kappa = float(polar.kappa)
 
     # Per-station section state; scalar until the compressible pass refines it.
     alpha_station = np.full_like(xi, alpha_d)
@@ -391,7 +389,7 @@ def adkins_liebeck_design(
             w_local = v_inf * (1.0 + a_ax) / np.maximum(np.sin(phi), 1e-9)
             mach = np.clip(w_local / air.sound_speed, 0.0, 0.92)
             alpha_station, cd_station = _compressible_section(
-                polar, cl_d, mach, thickness, m_crit0)
+                polar, cl_d, mach, thickness, kappa)
             eps = cd_station / max(cl_d, 1e-9)
 
         # Betz's condition fixes the product of chord and resultant velocity.
@@ -442,7 +440,7 @@ def adkins_liebeck_design(
         rpm=rpm, v_inf=v_inf, x=xi, chord=chord, twist=twist, phi=phi,
         a_axial=a_ax, a_swirl=a_sw, reynolds=reynolds, zeta=zeta,
         thrust=float(thrust_out), power=float(power_out),
-        efficiency=float(tc_out / pc_out) if pc_out > 1e-12 else 0.0,
+        efficiency=float(tc_out / pc_out) if pc_out > 1e-12 else float("nan"),
         design_cl=cl_d, design_alpha=float(np.mean(alpha_station)),
         converged=converged, iterations=iterations,
         meta={"advance_ratio": lam, "epsilon": float(np.mean(eps)),
@@ -454,8 +452,9 @@ def adkins_liebeck_design(
     )
 
 
-def verify_design(design: BladeDesign, air: AirState | None = None,
-                  n_elements: int = 60, **geometry_kw) -> dict[str, Any]:
+def verify_design(design: BladeDesign, air: AirState, *, airfoil: str,
+                  thickness_root: float, thickness_tip: float,
+                  n_elements: int = 60) -> dict[str, Any]:
     """Run a designed propeller back through the BEMT solver.
 
     The design method and the analysis are independent -- different equations,
@@ -467,10 +466,10 @@ def verify_design(design: BladeDesign, air: AirState | None = None,
     from .bemt.core import OperatingPoint, SolverOptions
     from .bemt.solver import PropellerSolver
 
-    geometry = design.to_geometry(**geometry_kw)
+    geometry = design.to_geometry(airfoil=airfoil, thickness_root=thickness_root,
+                                  thickness_tip=thickness_tip)
     solver = PropellerSolver(geometry, SolverOptions(n_elements=n_elements))
-    result = solver.solve(OperatingPoint(rpm=design.rpm, v_inf=design.v_inf,
-                                         air=air or SEA_LEVEL))
+    result = solver.solve(OperatingPoint(rpm=design.rpm, v_inf=design.v_inf, air=air))
     return {
         "geometry": geometry, "result": result,
         "design_thrust": design.thrust, "bemt_thrust": result.thrust,
@@ -481,6 +480,115 @@ def verify_design(design: BladeDesign, air: AirState | None = None,
     }
 
 
-__all__ = ["DiskSizing", "BladeDesign", "momentum_sizing", "diameter_sweep",
-           "induced_velocity", "drag_from_weight", "adkins_liebeck_design",
-           "verify_design"]
+# ---------------------------------------------------------------------------
+# 3. Choosing the diameter: a minimum-induced-loss design at every candidate
+# ---------------------------------------------------------------------------
+
+@dataclass(slots=True)
+class SizingCandidate:
+    """One diameter in the trade, designed and judged."""
+
+    diameter: float
+    hub_ratio: float
+    tip_mach: float
+    status: str                     # "ok" or why this diameter was rejected
+    efficiency: float               # Adkins-Liebeck design efficiency (nan if failed)
+    froude_efficiency: float        # actuator-disk limit at the design's thrust
+    thrust: float
+    activity_factor: float
+    beta75_deg: float
+    design: "BladeDesign | None" = None
+
+
+@dataclass(slots=True)
+class SizingResult:
+    status: str                     # "ok" | "infeasible"
+    message: str
+    candidates: list[SizingCandidate]
+    best: SizingCandidate | None
+    verification: dict[str, Any] | None
+    limits: dict[str, float]
+
+
+def size_propeller(*, power: float, prop_rpm: float, v_inf: float, air: AirState,
+                   n_blades: int, airfoil: str, design_cl: float,
+                   spinner_diameter: float, thickness_root: float, thickness_tip: float,
+                   max_diameter: float, tip_mach_limit: float,
+                   n_candidates: int = 21) -> SizingResult:
+    """Pick the diameter, and design the blade, that best absorbs ``power``.
+
+    Momentum theory says a bigger disk is always better, so on its own it
+    cannot choose a propeller.  Here every candidate diameter gets its own
+    Adkins-Liebeck minimum-induced-loss blade -- with compressible section
+    drag, so a tip running into drag divergence pays for it -- and the
+    candidates are compared on the efficiency of their *best possible* blade.
+    The range runs from half the largest allowed diameter up to the smaller
+    of ``max_diameter`` (ground clearance) and the diameter at which the
+    helical tip Mach number reaches ``tip_mach_limit``.  The winner is then
+    analysed by the independent BEMT solver as a check on the design.
+    """
+    omega = rpm_to_rad_s(prop_rpm)
+    a = air.sound_speed
+    vt2 = (tip_mach_limit * a) ** 2 - v_inf ** 2
+    limits = {"max_diameter": max_diameter, "tip_mach_limit": tip_mach_limit}
+    if vt2 <= 0.0:
+        return SizingResult("infeasible", "The airspeed alone exceeds the tip Mach limit; "
+                            "no propeller can satisfy it.", [], None, None, limits)
+    d_tip = 2.0 * math.sqrt(vt2) / omega
+    limits["tip_mach_diameter"] = d_tip
+    d_hi = min(max_diameter, d_tip)
+    d_lo = max(0.5 * d_hi, spinner_diameter / 0.45)
+    limits["diameter_low"] = d_lo
+    limits["diameter_high"] = d_hi
+    if d_lo >= d_hi:
+        return SizingResult(
+            "infeasible",
+            f"The spinner ({spinner_diameter / 0.0254:.1f} in) is too large for the "
+            f"largest allowed diameter ({d_hi / 0.0254:.1f} in).", [], None, None, limits)
+
+    candidates: list[SizingCandidate] = []
+    for d in np.linspace(d_lo, d_hi, n_candidates):
+        hub = spinner_diameter / d
+        tip = math.hypot(omega * d / 2.0, v_inf) / a
+        try:
+            des = adkins_liebeck_design(
+                d / 2.0, n_blades, prop_rpm, v_inf, air=air, airfoil=airfoil,
+                hub_radius_frac=hub, thickness_root=thickness_root,
+                thickness_tip=thickness_tip, power=power, design_cl=design_cl)
+        except ValueError as exc:
+            candidates.append(SizingCandidate(d, hub, tip, f"design_failed: {exc}",
+                                              math.nan, math.nan, math.nan, math.nan, math.nan))
+            continue
+        area = math.pi * d * d / 4.0
+        w = induced_velocity(des.thrust, v_inf, area, air.density)
+        froude = v_inf / (v_inf + w) if (v_inf + w) > 0 else math.nan
+        status = "ok"
+        if not des.converged:
+            status = "design_not_converged"
+        elif not (np.all(np.isfinite(des.chord)) and np.all(des.chord > 0.0)):
+            status = "design_invalid_chord"
+        elif float(np.max(des.chord)) > 0.35 * d:
+            status = "blade_too_wide"
+        candidates.append(SizingCandidate(
+            d, hub, tip, status, des.efficiency, froude, des.thrust,
+            des.activity_factor, math.degrees(float(np.interp(0.75, des.x, des.twist))),
+            des))
+
+    good = [c for c in candidates if c.status == "ok" and math.isfinite(c.efficiency)]
+    if not good:
+        reasons = sorted({c.status for c in candidates})
+        return SizingResult("infeasible", "No candidate diameter produced a valid design ("
+                            + ", ".join(reasons) + ").", candidates, None, None, limits)
+    best = max(good, key=lambda c: c.efficiency)
+    check = verify_design(best.design, air, airfoil=airfoil, thickness_root=thickness_root,
+                          thickness_tip=thickness_tip)
+    binding = ("tip Mach limit" if d_tip < max_diameter else "maximum diameter")
+    at_top = abs(best.diameter - d_hi) < 1e-9
+    message = (f"Best diameter {best.diameter / 0.0254:.1f} in"
+               + (f", set by the {binding}" if at_top else ", an interior optimum") + ".")
+    return SizingResult("ok", message, candidates, best, check, limits)
+
+
+__all__ = ["DiskSizing", "BladeDesign", "SizingCandidate", "SizingResult",
+           "momentum_sizing", "diameter_sweep", "induced_velocity", "drag_from_weight",
+           "adkins_liebeck_design", "verify_design", "size_propeller"]

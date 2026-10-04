@@ -126,39 +126,41 @@ _TEMPLATE = r"""{PROLOGUE}
 
 {PW_DEVFN} void pw_corrections(double *cl, double *cd, double w, double chord,
                                double rho, double mu, double a_sound,
-                               double thickness, double re_ref, double m_crit0,
+                               double thickness, double re_ref, double kappa,
                                double cl_max, int flags)
 {{
+    /* Full-size corrections; the NumPy twin in core.py documents each term. */
+    double re_cl = 1.0;
     if (flags & FLAG_REYNOLDS) {{
         double re = rho * w * chord / mu;
-        if (re < 1.0e3) re = 1.0e3;
-        double ratio = re_ref / re;
-        double scale = pow(ratio, 0.2);
-        double low = 2.0e4 / re - 1.0;
-        if (low > 0.0) scale *= 1.0 + 0.45 * low;
-        if (scale < 0.5)      scale = 0.5;
-        else if (scale > 4.0) scale = 4.0;
+        if (re < 1.0e4) re = 1.0e4;
+        double scale = pow(re_ref / re, 0.2);
+        if (scale < 0.75)      scale = 0.75;
+        else if (scale > 1.6)  scale = 1.6;
         *cd *= scale;
-
-        double cls = 1.0 - 0.14 * log10(ratio);
-        if (cls < 0.45)      cls = 0.45;
-        else if (cls > 1.12) cls = 1.12;
-        *cl *= cls;
+        re_cl = 1.0 + 0.06 * log10(re / re_ref);
+        if (re_cl < 0.85)      re_cl = 0.85;
+        else if (re_cl > 1.05) re_cl = 1.05;
     }}
     if (flags & FLAG_MACH) {{
         double m = w / a_sound;
-        if (m < 0.0)       m = 0.0;
-        else if (m > 0.92) m = 0.92;
-        double den = 1.0 - m * m;
+        if (m < 0.0) m = 0.0;
+        double m_pg = (m > 0.92) ? 0.92 : m;
+        double den = 1.0 - m_pg * m_pg;
         if (den < 1.0e-3) den = 1.0e-3;
         *cl /= sqrt(den);
         /* Compressibility raises the lift slope but lowers the stall ceiling. */
-        double ceiling = pw_mach_cl_ceiling(m, cl_max);
+        double ceiling = pw_mach_cl_ceiling(m_pg, cl_max) * re_cl;
         if (*cl >  ceiling) *cl =  ceiling;
         if (*cl < -ceiling) *cl = -ceiling;
-        double m_dd = m_crit0 - 0.1 * fabs(*cl) - thickness;
-        double dm = m - m_dd;
+        /* Korn drag divergence, Lock's rise from the critical Mach 0.1077 below. */
+        double m_w = (m > 1.2) ? 1.2 : m;
+        double dm = m_w - (kappa - 0.1 * fabs(*cl) - thickness - 0.1077);
         if (dm > 0.0) *cd += 20.0 * dm * dm * dm * dm;
+    }} else {{
+        double ceiling = cl_max * re_cl;
+        if (*cl >  ceiling) *cl =  ceiling;
+        if (*cl < -ceiling) *cl = -ceiling;
     }}
     if (*cd < 1.0e-5) *cd = 1.0e-5;
 }}
@@ -169,7 +171,7 @@ _TEMPLATE = r"""{PROLOGUE}
  */
 {PW_DEVFN} double pw_element(
         double phi, double twist, double r, double chord, double sigma,
-        double thickness, double re_ref, double m_crit0, double cl_max,
+        double thickness, double re_ref, double kappa, double cl_max,
         int base, int n_alpha,
         double alpha0, double d_alpha,
         {PW_GLOBAL} const double * {PW_RESTRICT} cl_tab,
@@ -200,7 +202,7 @@ _TEMPLATE = r"""{PROLOGUE}
 
     double cl = cl0, cd = cd0;
     pw_corrections(&cl, &cd, w, chord, rho, mu, a_sound, thickness, re_ref,
-                   m_crit0, cl_max, flags);
+                   kappa, cl_max, flags);
 
     double cn = cl * cp - cd * sp;
     double ct = cl * sp + cd * cp;
@@ -221,7 +223,7 @@ _TEMPLATE = r"""{PROLOGUE}
         {PW_GLOBAL} const double * {PW_RESTRICT} sigma,
         {PW_GLOBAL} const double * {PW_RESTRICT} thickness,
         {PW_GLOBAL} const double * {PW_RESTRICT} re_ref,
-        {PW_GLOBAL} const double * {PW_RESTRICT} m_crit0,
+        {PW_GLOBAL} const double * {PW_RESTRICT} kappa,
         {PW_GLOBAL} const double * {PW_RESTRICT} cl_max,
         {PW_GLOBAL} const double * {PW_RESTRICT} dr,
         {PW_GLOBAL} const double * {PW_RESTRICT} cl_tab,
@@ -264,12 +266,12 @@ _TEMPLATE = r"""{PROLOGUE}
         double lo = phi_lo, hi = phi_hi;
 
         double r_lo = pw_element(lo, twist[s], r[s], chord[s], sigma[s], thickness[s],
-                                 re_ref[s], m_crit0[s], cl_max[s], base, n_alpha, alpha0, d_alpha,
+                                 re_ref[s], kappa[s], cl_max[s], base, n_alpha, alpha0, d_alpha,
                                  cl_tab, cd_tab, omega_r, vv, rho, mu, a_sound,
                                  r_tip, r_hub, n_blades, flags,
                                  &w, &cl, &cd, &cn, &ct, &fl, &al);
         double r_hi = pw_element(hi, twist[s], r[s], chord[s], sigma[s], thickness[s],
-                                 re_ref[s], m_crit0[s], cl_max[s], base, n_alpha, alpha0, d_alpha,
+                                 re_ref[s], kappa[s], cl_max[s], base, n_alpha, alpha0, d_alpha,
                                  cl_tab, cd_tab, omega_r, vv, rho, mu, a_sound,
                                  r_tip, r_hub, n_blades, flags,
                                  &w, &cl, &cd, &cn, &ct, &fl, &al);
@@ -281,7 +283,7 @@ _TEMPLATE = r"""{PROLOGUE}
         for (int it = 0; it < n_bisect; ++it) {{
             double mid = 0.5 * (lo + hi);
             double r_mid = pw_element(mid, twist[s], r[s], chord[s], sigma[s],
-                                      thickness[s], re_ref[s], m_crit0[s], cl_max[s],
+                                      thickness[s], re_ref[s], kappa[s], cl_max[s],
                                       base, n_alpha, alpha0, d_alpha, cl_tab, cd_tab,
                                       omega_r, vv, rho, mu, a_sound, r_tip, r_hub,
                                       n_blades, flags,
@@ -298,7 +300,7 @@ _TEMPLATE = r"""{PROLOGUE}
         }}
 
         pw_element(phi, twist[s], r[s], chord[s], sigma[s], thickness[s],
-                   re_ref[s], m_crit0[s], cl_max[s], base, n_alpha, alpha0, d_alpha,
+                   re_ref[s], kappa[s], cl_max[s], base, n_alpha, alpha0, d_alpha,
                    cl_tab, cd_tab, omega_r, vv, rho, mu, a_sound,
                    r_tip, r_hub, n_blades, flags,
                    &w, &cl, &cd, &cn, &ct, &fl, &al);

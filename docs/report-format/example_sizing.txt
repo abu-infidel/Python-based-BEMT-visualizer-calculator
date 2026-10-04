@@ -1,0 +1,196 @@
+#PROPWASH-REPORT 1
+# Structured results; specification: docs/report-format/README.md
+# Lines starting with '#' are comments. Values are JSON scalars; [unit]; {CODE} explains a null.
+
+[META]
+format = "PROPWASH-REPORT"
+format_version = 1
+generator = "propwash 2.0.0"
+created_utc = "2026-10-04T14:37:36Z"
+case_name = "Sizing example: 160 hp cruise propeller"
+mode = "sizing"
+status = "ok"
+notice_count = 0
+
+[INPUTS]
+case.name = "Sizing example: 160 hp cruise propeller"
+case.mode = "sizing"
+flight.altitude_ft = 8000 [ft]
+flight.isa_deviation_c = 0 [degC]
+flight.airspeed_ktas = 122 [kt]
+engine.rated_power_hp = 160 [hp]
+engine.rated_rpm = 2700 [rpm]
+engine.gear_ratio = 1 [-]
+engine.aspiration = "normal"
+engine.critical_altitude_ft = null [ft] {NOT_GIVEN}
+engine.bsfc_lb_hp_h = 0.42 [lb/(hp*h)]
+propeller.diameter_in = null [in] {NOT_GIVEN}
+propeller.blades = 2 [-]
+propeller.activity_factor = null [-] {NOT_GIVEN}
+propeller.spinner_diameter_in = 9 [in]
+propeller.planform = null {NOT_GIVEN}
+propeller.root_airfoil = null {NOT_GIVEN}
+propeller.tip_airfoil = null {NOT_GIVEN}
+propeller.root_thickness_pct = 20 [%]
+propeller.tip_thickness_pct = 7 [%]
+propeller.pitch_type = null {NOT_GIVEN}
+propeller.pitch_in = null [in] {NOT_GIVEN}
+propeller.fine_stop_deg = null [deg] {NOT_GIVEN}
+propeller.coarse_stop_deg = null [deg] {NOT_GIVEN}
+operating.mode = null {NOT_GIVEN}
+operating.engine_rpm = 2650 [rpm]
+operating.power_pct = 75 [% rated]
+airframe.weight_lb = null [lb] {NOT_GIVEN}
+airframe.wing_area_ft2 = null [ft^2] {NOT_GIVEN}
+airframe.wing_span_ft = null [ft] {NOT_GIVEN}
+airframe.cd0 = null [-] {NOT_GIVEN}
+airframe.oswald_e = null [-] {NOT_GIVEN}
+airframe.cl_max = null [-] {NOT_GIVEN}
+sizing.max_diameter_in = 76 [in]
+sizing.tip_mach_limit = 0.88 [-]
+sizing.design_cl = 0.5 [-]
+sizing.airfoil = "clark_y"
+
+[MODEL]
+method = "blade element momentum theory, Prandtl tip and hub loss"
+atmosphere = "ISA 1976 with temperature offset"
+blade_elements = 60
+element_spacing = "cosine"
+reynolds_correction = true
+compressibility_correction = true
+engine_peak_torque_fraction = 0.78
+engine_torque_droop = 0.08
+engine_gagg_farrar_constant = 7.55
+engine_min_running_fraction = 0.25
+service_ceiling_climb_rate = 100 [ft/min]
+
+[ATMOSPHERE]
+pressure_altitude_ft = 8000 [ft]
+density_altitude_ft = 8000 [ft]
+temperature_c = -0.8496 [degC]
+pressure_pa = 75262.4 [Pa]
+density_kg_m3 = 0.96287 [kg/m^3]
+density_ratio = 0.786016 [-]
+speed_of_sound_m_s = 330.803 [m/s]
+dynamic_viscosity_pa_s = 1.711792e-05 [Pa*s]
+
+[ENGINE]
+rated_power_hp = 160 [hp]
+rated_power_kw = 119.312 [kW]
+rated_engine_rpm = 2700 [rpm]
+gear_ratio = 1 [-]
+max_prop_rpm = 2700 [rpm]
+min_running_prop_rpm = 675 [rpm]
+aspiration = "normal"
+altitude_power_factor = 0.757674 [-]
+full_throttle_power_at_rated_rpm_hp = 121.228 [hp]
+
+[DESIGN_POINT]
+airspeed_ktas = 122 [kt]
+engine_rpm = 2650 [rpm]
+prop_rpm = 2650 [rpm]
+shaft_power_hp = 120 [hp]
+available_power_hp = 120.651 [hp]
+status = "ok"
+
+[SIZING]
+status = "ok"
+message = "Best diameter 72.2 in, an interior optimum."
+max_diameter_in = 76 [in]
+tip_mach_limited_diameter_in = 80.6562 [in]
+searched_from_diameter_in = 38 [in]
+diameter_in = 72.2 [in]
+diameter_m = 1.83388 [m]
+blades = 2
+hub_ratio = 0.124654 [-]
+activity_factor_per_blade = 90.1398 [-]
+beta75_deg = 19.4677 [deg]
+geometric_pitch_at_75_in = 60.1338 [in]
+pitch_to_diameter = 0.832877 [-]
+helical_tip_mach = 0.792265 [-]
+design_efficiency = 0.858856 [-]
+momentum_limit_efficiency = 0.94538 [-]
+design_thrust_lbf = 275.284 [lbf]
+bemt_thrust_lbf = 273.579 [lbf]
+bemt_power_hp = 120.378 [hp]
+bemt_efficiency = 0.850853 [-]
+bemt_thrust_error_pct = -0.619443 [%]
+bemt_power_error_pct = 0.315332 [%]
+design_iterations = 5
+
+[TABLE.DIAMETER_TRADE]
+# Each row is the best (minimum-induced-loss) blade for that diameter.
+diameter_in[in],diameter_m[m],helical_tip_mach[-],status[],design_efficiency[-],momentum_limit_efficiency[-],thrust_lbf[lbf],activity_factor[-],beta75_deg[deg]
+38,0.9652,0.4471,"blade_too_wide",0.595524,0.881208,190.88,1029.52,45.6173
+39.9,1.01346,0.465509,"blade_too_wide",0.634095,0.884433,203.243,854.987,42.4047
+41.8,1.06172,0.484064,"blade_too_wide",0.666532,0.888335,213.64,717.874,39.6416
+43.7,1.10998,0.50275,"blade_too_wide",0.694185,0.892576,222.503,608.178,37.2329
+45.6,1.15824,0.521551,"blade_too_wide",0.718003,0.896954,230.137,519.177,35.1105
+47.5,1.2065,0.540457,"blade_too_wide",0.738685,0.901339,236.767,446.148,33.2234
+49.4,1.25476,0.559456,"blade_too_wide",0.756764,0.905653,242.561,385.656,31.5356
+51.3,1.30302,0.57854,"blade_too_wide",0.772653,0.909847,247.654,335.14,30.0131
+53.2,1.35128,0.5977,"ok",0.786681,0.913889,252.15,292.654,28.6316
+55.1,1.39954,0.616929,"ok",0.799115,0.917764,256.136,256.694,27.371
+57,1.4478,0.636221,"ok",0.810173,0.921462,259.68,226.082,26.215
+58.9,1.49606,0.65557,"ok",0.820033,0.924982,262.841,199.885,25.1501
+60.8,1.54432,0.674971,"ok",0.828832,0.928327,265.661,177.354,24.1649
+62.7,1.59258,0.694421,"ok",0.836655,0.931502,268.168,157.884,23.2497
+64.6,1.64084,0.713915,"ok",0.843522,0.93452,270.369,140.975,22.3963
+66.5,1.6891,0.733449,"ok",0.849377,0.937396,272.246,126.214,21.5974
+68.4,1.73736,0.753021,"ok",0.854072,0.940149,273.751,113.255,20.8467
+70.3,1.78562,0.772627,"ok",0.857353,0.942801,274.802,101.808,20.1386
+72.2,1.83388,0.792265,"ok",0.858856,0.94538,275.284,91.6276,19.4682
+74.1,1.88214,0.811933,"ok",0.858103,0.947912,275.043,82.505,18.831
+76,1.9304,0.831629,"ok",0.854509,0.950429,273.891,74.2652,18.2233
+[END_TABLE]
+
+[TABLE.BLADE_DESIGN]
+# Minimum-induced-loss blade at the chosen diameter, hub to tip.
+r_over_r[-],radius_m[m],chord_m[m],chord_in[in],blade_angle_deg[deg],inflow_angle_deg[deg],thickness_ratio[-],reynolds[-],mach[-]
+0.124654,0.1143,0.0976491,3.84445,65.7677,65.3783,0.2,385737,0.212294
+0.147073,0.134857,0.122253,4.81311,61.9798,61.5991,0.199832,501711,0.220551
+0.169492,0.155414,0.14473,5.69805,58.4419,58.0712,0.199335,618883,0.229807
+0.191911,0.175971,0.164309,6.46884,55.1536,54.7945,0.198524,733604,0.239947
+0.21433,0.196528,0.180645,7.11202,52.1084,51.7622,0.197411,843245,0.250866
+0.236749,0.217085,0.193715,7.62659,49.2949,48.9631,0.196009,946069,0.262466
+0.259169,0.237642,0.203703,8.01979,46.6991,46.3834,0.194332,1.04107e+06,0.274662
+0.281588,0.258199,0.210907,8.30341,44.3056,44.0073,0.192392,1.12779e+06,0.287377
+0.304007,0.278756,0.215678,8.49127,42.0983,41.8191,0.190203,1.20616e+06,0.300547
+0.326426,0.299313,0.218374,8.5974,40.0615,39.8029,0.187778,1.27636e+06,0.314113
+0.348845,0.31987,0.219331,8.63506,38.1802,37.9436,0.185129,1.33873e+06,0.328027
+0.371264,0.340427,0.218851,8.61618,36.44,36.2272,0.18227,1.39371e+06,0.342246
+0.393683,0.360984,0.217199,8.55114,34.8279,34.6406,0.179215,1.44174e+06,0.356733
+0.416102,0.381541,0.214598,8.44875,33.332,33.1716,0.175975,1.48327e+06,0.371457
+0.438522,0.402098,0.211236,8.31639,31.9411,31.8095,0.172565,1.51873e+06,0.386391
+0.460941,0.422655,0.207267,8.1601,30.6455,30.5443,0.168997,1.54851e+06,0.401511
+0.48336,0.443212,0.202814,7.9848,29.4363,29.3673,0.165285,1.57293e+06,0.416798
+0.505779,0.463769,0.197978,7.79442,28.3053,28.2703,0.161441,1.59228e+06,0.432232
+0.528198,0.484326,0.192839,7.59207,27.2454,27.2462,0.157479,1.6068e+06,0.447799
+0.550617,0.504883,0.187456,7.38016,26.2501,26.2886,0.153412,1.61667e+06,0.463485
+0.573036,0.52544,0.181877,7.16053,25.3135,25.3917,0.149252,1.62201e+06,0.479279
+0.595456,0.545997,0.176137,6.93453,24.4304,24.5502,0.145014,1.6229e+06,0.49517
+0.617875,0.566554,0.170258,6.70308,23.5961,23.7596,0.14071,1.61936e+06,0.51115
+0.640294,0.587111,0.164256,6.46679,22.8064,23.0157,0.136352,1.61135e+06,0.527209
+0.662713,0.607668,0.158138,6.22592,22.0572,22.3146,0.131955,1.5988e+06,0.543341
+0.685132,0.628225,0.151904,5.98046,21.3453,21.6529,0.127532,1.58156e+06,0.55954
+0.707551,0.648782,0.145546,5.73017,20.6674,21.0277,0.123095,1.5594e+06,0.5758
+0.72997,0.669339,0.139052,5.47451,20.0206,20.436,0.118658,1.53204e+06,0.592116
+0.75239,0.689896,0.132403,5.2127,19.4023,19.8754,0.114233,1.4991e+06,0.608483
+0.774809,0.710453,0.125569,4.94364,18.8101,19.3436,0.109834,1.46007e+06,0.624895
+0.797228,0.73101,0.118513,4.66588,18.2417,18.8384,0.105474,1.41432e+06,0.641349
+0.819647,0.751567,0.111187,4.37745,17.6953,18.3582,0.101166,1.361e+06,0.657838
+0.842066,0.772124,0.103523,4.07573,17.1688,17.901,0.0969235,1.29901e+06,0.674356
+0.864485,0.792681,0.0954299,3.75708,16.6605,17.4653,0.092759,1.22683e+06,0.690897
+0.886904,0.813238,0.0867739,3.4163,16.1689,17.0497,0.0886858,1.14228e+06,0.707455
+0.909323,0.833795,0.0773527,3.04538,15.6923,16.6529,0.0847171,1.04211e+06,0.724023
+0.931743,0.854352,0.066827,2.63099,15.2294,16.2736,0.0808659,920911,0.740593
+0.954162,0.874909,0.0545417,2.14731,14.7787,15.9109,0.0771454,768423,0.757157
+0.976581,0.895466,0.0388351,1.52894,14.3388,15.5635,0.0735686,559097,0.773707
+0.999,0.916023,0.0079956,0.314787,13.9086,15.2306,0.0701487,117569,0.790234
+[END_TABLE]
+
+[NOTICES]
+
+[INTEGRITY]
+body_sha256 = "09180d03b379fe3198abab1e79ed65dbc5acb0cc3adffd4ba1642de7c6e9cbdf"
+[END]
